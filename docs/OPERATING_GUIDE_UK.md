@@ -1,148 +1,188 @@
-# Memory Kernel: для чого воно і як з ним працювати
+# Memory Kernel: проста інструкція для людини
 
 Назва пакета на PyPI: `amormorri-memory-kernel`
 Команда після встановлення: `memory-kernel`
 
-## Що це
+## Що це простими словами
 
-`Memory Kernel` — це локальне ядро пам'яті для AI-агентів і LLM-застосунків.
-Його задача не "пам'ятати все підряд", а повертати тільки корисний, точний і дешевий контекст.
+`Memory Kernel` — це локальна пам'ять для AI-агентів і LLM-застосунків.
+
+Його задача не в тому, щоб "пам'ятати все підряд". Його задача в тому, щоб:
+
+1. зберігати важливі речі локально на твоїй машині;
+2. не роздувати пам'ять зайвим шумом;
+3. повертати тільки той контекст, який реально потрібен зараз;
+4. дозволяти легко зробити backup або перенести пам'ять на іншу машину.
+
+Ідея проста: менше магії, більше контролю.
 
 ## Старт за 5 хвилин
 
-Якщо не хочеш зараз розбиратися в `FTS5`, ranking і context pack, використовуй програму так:
+Якщо хочеш просто спробувати систему, почни так:
 
-1. Встанови пакет:
-   `pip install amormorri-memory-kernel`
-2. Створи локальну базу:
-   `memory-kernel init`
-3. Збережи одне важливе рішення:
-   `memory-kernel remember --scope my.project --kind decision --title "Що вирішили" --content "Зберігаємо пам'ять локально на машині користувача."`
-4. Потім дістань це назад:
-   `memory-kernel search "локальна пам'ять"`
-5. Зроби backup:
-   `memory-kernel export --format json --output exports\memory.json`
+```powershell
+pip install amormorri-memory-kernel
+memory-kernel init
+memory-kernel remember --scope my.project --kind decision --title "Пам'ять локально" --content "Зберігаємо пам'ять на машині користувача."
+memory-kernel search "пам'ять локально"
+memory-kernel export --format json --output exports\memory.json
+```
 
-Цього вже достатньо, щоб почати користуватись системою без занурення у внутрішню архітектуру.
+Що тут сталося:
 
-Якщо ти працюєш саме з локального git-репозиторію, а не з PyPI, тоді можна ставити dev-версію так:
+1. `init` створив локальну базу пам'яті.
+2. `remember` зберіг один точний запис.
+3. `search` знайшов цей запис назад.
+4. `export` зробив backup.
 
-`pip install -e .[dev]`
+Цього вже достатньо, щоб відчути, як працює система.
 
-## Стадія проєкту
+Якщо ти працюєш із локального репозиторію, а не з PyPI:
 
-Поточна стадія: робоча alpha.
+```powershell
+pip install -e .[dev]
+```
 
-- CLI вже працює;
-- пакет уже опублікований;
-- є тести;
-- є export / import;
-- є optional Rust accelerator;
-- Python fallback працює без native-збірки.
+## Як користуватись щодня
 
-Але ще не завершено:
+Найпростіший робочий сценарій такий:
 
-- готові wheels для основних платформ;
-- guided ingest для нетехнічного користувача;
-- зовсім простий consumer-style onboarding.
+1. Зберігай точні рішення через `remember`.
+2. Закидай сирі нотатки або стенограми через `ingest`.
+3. Перед задачею діставай потрібне через `search`, `context` або `wake-up`.
+4. Періодично роби `export`, щоб мати backup.
+5. Якщо треба перенести систему, використовуй `import`.
 
-## Після першого релізу
+## Яку команду коли використовувати
 
-Щоб не втрачати сигнали від перших реальних користувачів, у репозиторії вже підготовлено шаблон:
+### `remember`
 
-`/.github/ISSUE_TEMPLATE/first-run-feedback.yml`
+Використовуй, коли ти вже чітко знаєш, що саме треба зберегти.
 
-Мінімум, який варто збирати з першого запуску:
+Підходить для:
 
-- звідки людина ставила пакет: `PyPI`, `TestPyPI` або локальний repo;
-- ОС і версія Python;
-- точна команда;
-- що вона очікувала;
-- що пішло не так або що було незрозуміло.
+- рішення;
+- правила;
+- обмеження;
+- сталої переваги користувача.
 
-Релізні зміни зручно фіксувати окремо в:
+```powershell
+memory-kernel remember --scope project.alpha --kind decision --title "Use SQLite FTS5" --content "Ми використовуємо SQLite FTS5 для локального пошуку."
+```
 
-`/CHANGELOG.md`
+### `ingest`
 
-## Для кого це зараз
+Використовуй, коли в тебе є сирий текст, а не готовий структурований запис.
 
-Найкраще підходить, якщо тобі потрібні:
+Підходить для:
 
-- локальна пам'ять на своїй машині;
-- контроль над тим, що саме зберігається;
-- прозорий export / import;
-- малий і передбачуваний контекст для моделі.
+- нотаток із зустрічі;
+- стенограми;
+- чернетки документа;
+- логу роботи агента.
 
-Слабше підходить, якщо ти очікуєш:
+```powershell
+memory-kernel ingest --scope project.alpha --file notes.txt --source sprint-review --tags planning transcript
+```
 
-- повністю hosted experience без локального сетапу;
-- максимально автоматичну структуризацію хаотичних нотаток;
-- consumer-продукт, де все працює "само" без дисципліни записів.
+### `search`
 
-Це рішення потрібне там, де звичайні memory-системи дають дві проблеми:
+Використовуй, коли треба знайти кілька точних релевантних записів.
 
-- повертають розмиті й малокорисні записи разом з важливими;
-- самі з'їдають занадто багато ресурсів на пошук, ранжування і підготовку prompt.
+```powershell
+memory-kernel search "контекст бюджет"
+```
 
-## Для чого це підходить
+### `context`
 
-- локальна пам'ять для AI-агентів;
-- пам'ять рішень і обмежень по проєкту;
-- зберігання коротких фактів, задач, переваг користувача;
-- перетворення нотаток, стенограм і chat logs у структуровану пам'ять;
-- побудова маленьких `context pack` для LLM без перевантаження prompt.
+Використовуй, коли треба підготувати короткий набір пам'яті для prompt.
 
-## Головна ідея
+```powershell
+memory-kernel context "Як зробити пам'ять дешевою?" --budget-chars 700
+```
 
-Система не покладається на "магічну" fuzzy memory.
-Вона працює так:
+### `wake-up`
 
-1. Текст зберігається локально в `SQLite`.
-2. Для пошуку використовується `FTS5`.
-3. Кожен запис має чіткий `kind`:
-   `decision`, `constraint`, `preference`, `task`, `fact`, `note`.
-4. Пам'ять ранжується детерміновано, а не випадково.
-5. У prompt віддається не вся база, а короткий pack з лімітом символів.
+Використовуй, коли треба стартовий маленький набір "гарячої" пам'яті без окремого запиту.
+
+```powershell
+memory-kernel wake-up --budget-chars 500
+```
+
+### `stats`
+
+Використовуй, коли хочеш побачити стан бази й чи працює native accelerator.
+
+```powershell
+memory-kernel stats
+```
+
+### `export`
+
+Використовуй для backup, переносу або аудиту.
+
+```powershell
+memory-kernel export --format json --output exports\memory.json
+memory-kernel export --scope project.alpha --format jsonl --output exports\project-alpha.jsonl
+```
+
+### `import`
+
+Використовуй, щоб відновити попередній export.
+
+```powershell
+memory-kernel import --file exports\memory.json
+memory-kernel import --file exports\project-alpha.jsonl
+```
+
+Один і той самий export можна імпортувати повторно без безкінечного плодіння дублікатів, бо імпорт іде через upsert по `id`.
+
+## Як це працює
+
+Головна ідея дуже проста:
+
+1. Пам'ять зберігається локально в `SQLite`.
+2. Для дешевого пошуку використовується `FTS5`.
+3. Результати не дістаються "магічно", а ранжуються детерміновано.
+4. У модель потрапляє не вся база, а короткий `context pack` з лімітом символів.
+
+Саме це зменшує і розмитість, і навантаження.
 
 ## Принцип роботи
 
-### На практиці це виглядає так
+### Що відбувається на практиці
 
 1. У систему потрапляє або один точний запис через `remember`, або сирий текст через `ingest`.
-2. Якщо це сирий текст, він ріжеться на окремі memory-кандидати.
-3. Для кожного кандидата визначаються:
-   `kind`, `title`, `summary`, `tags`, `importance`, `certainty`.
-4. Запис зберігається в `SQLite`, а duplicate-aware логіка не дає базі розростатися однаковими дублями.
+2. Якщо це сирий текст, система ділить його на кандидати в пам'ять.
+3. Для кожного кандидата визначаються `kind`, `title`, `summary`, `tags`, `importance`, `certainty`.
+4. Запис іде в `SQLite`, а duplicate-aware логіка не дає базі розростатися дублями.
 5. Під час пошуку `FTS5` знаходить кандидатів.
-6. Далі кандидати ранжуються евристично:
-   lexical match, actionability, certainty, importance, recency, reuse.
-7. Для моделі збирається маленький `context pack`, а не дамп усієї пам'яті.
+6. Далі кандидати ранжуються за змістом, важливістю, надійністю, свіжістю та повторним використанням.
+7. Для моделі збирається короткий `context pack`, а не вивантажується вся пам'ять.
 
 ### Що тут найважливіше
 
-- спочатку cheap lexical retrieval;
+- спочатку дешевий lexical retrieval;
 - потім детерміноване ranking-рішення;
-- потім жорсткий budget на фінальний контекст.
+- потім жорсткий бюджет на фінальний контекст.
 
-Саме ця послідовність і зменшує розмитість та навантаження.
-
-## Схема роботи
+## Схеми
 
 ### Потік даних
 
 ```mermaid
 flowchart TD
-    A[Raw input: note, chat, transcript, command] --> B{Entry mode}
-    B -->|remember| C[Validated memory record]
+    A[Raw input: note, transcript, command] --> B{Entry mode}
+    B -->|remember| C[One validated memory]
     B -->|ingest| D[Split into memory candidates]
     D --> E[Infer kind, title, summary, tags, importance, certainty]
-    E --> C
-    C --> F[Duplicate-aware upsert]
+    E --> F[Duplicate-aware upsert]
+    C --> F
     F --> G[(SQLite + FTS5)]
-    G --> H[FTS candidate retrieval]
+    G --> H[Search candidates]
     H --> I[Deterministic ranking]
     I --> J[Top memories]
-    J --> K[Context pack with hard char budget]
+    J --> K[Context pack with hard size limit]
     K --> L[LLM or AI agent]
 ```
 
@@ -150,334 +190,162 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    U[User / Agent / App] --> CLI[Python CLI / API layer]
-    CLI --> STORE[Python store layer]
+    U[User or Agent] --> CLI[CLI or Python API]
+    CLI --> STORE[MemoryStore]
     STORE --> DB[(SQLite + FTS5)]
-    STORE --> RUST[Rust accelerator]
-    RUST --> STORE
-    STORE --> PACK[Context pack]
+    STORE --> ACCEL[Optional Rust accelerator]
+    STORE --> PACK[Context pack builder]
     PACK --> MODEL[LLM]
 ```
 
-### Схема даних одного memory-запису
+### Схема одного memory-запису
 
 ```text
 MemoryRecord
-├─ scope
-├─ kind
-├─ title
-├─ summary
-├─ content
-├─ tags
-├─ source
-├─ importance
-├─ certainty
-├─ access_count
-├─ created_at
-├─ updated_at
-└─ last_accessed_at
+|- scope
+|- kind
+|- title
+|- summary
+|- content
+|- tags
+|- source
+|- importance
+|- certainty
+|- access_count
+|- created_at
+|- updated_at
+\- last_accessed_at
 ```
 
-## Чому це краще за важкі memory-стеки
+## Чому це легше за важкі memory-стеки
 
-- немає обов'язкового vector DB;
-- немає постійних embedding-витрат;
+- не потрібен обов'язковий vector DB;
+- не потрібні постійні embedding-витрати;
 - менше latency;
-- простіше дебажити, бо записи зберігаються у явному вигляді;
+- простіше дебажити, бо записи видно явно;
 - легше контролювати, що саме потрапляє в модель.
-
-## Архітектура
-
-### Python-рівень
-
-Python відповідає за:
-
-- CLI;
-- роботу з `SQLite`;
-- міграції схеми;
-- fallback-режим, якщо native-модуль не зібраний.
-
-### Rust-рівень
-
-`Rust` прискорює гарячий шлях:
-
-- ingest raw text;
-- duplicate-aware upsert логіку;
-- евристики для `kind`, `title`, `summary`, `tags`;
-- експериментальний ranking кандидатів після пошуку;
-- експериментальну побудову `context pack`.
-
-Якщо ти вбудовуєш це як Python-бібліотеку, `MemoryStore` тримає довгоживуче `SQLite`-з'єднання заради продуктивності. Найкраще використовувати `with MemoryStore(...) as store:` або явно викликати `store.close()`.
-
-Якщо native-модуль доступний, `memory-kernel stats` покаже активний accelerator і рушії гарячих шляхів:
-
-```text
-accelerator: rust
-ranking engine: adaptive (rust when candidates >= 24)
-upsert engine: rust-assisted duplicate merge
-```
-
-## Основні режими роботи
-
-### 1. `remember`
-
-Використовуй, коли ти вже знаєш точний запис, який треба зберегти.
-
-Приклади:
-
-- важливе рішення;
-- критичне обмеження;
-- стійка перевага користувача.
-
-### 2. `ingest`
-
-Використовуй, коли є сирий текст:
-
-- нотатки з мітингу;
-- стенограма;
-- лог сесії агента;
-- текстовий чернетковий документ.
-
-Система сама:
-
-- розіб'є текст на memory-кандидати;
-- призначить `kind`;
-- згенерує `title`, `summary`, `tags`;
-- оновить дублі замість розростання бази.
-
-### 3. `search`
-
-Потрібен, коли треба знайти точний контекст за запитом.
-
-### 4. `context`
-
-Потрібен, коли треба підготувати короткий набір пам'яті для prompt.
-
-### 5. `wake-up`
-
-Потрібен для стартового "гарячого" набору пам'яті без конкретного пошукового запиту.
-
-### 6. `stats`
-
-Показує стан бази і активний accelerator.
-
-### 7. `export`
-
-Потрібен, коли треба вивантажити пам'ять у переносний файл для backup, переносу на іншу машину, аудиту або подальшої обробки.
-Підтримуються два формати:
-
-- `json` для одного повного snapshot-файлу з метаданими;
-- `jsonl` для построчного експорту, де один memory-запис = один рядок.
-
-### 8. `import`
-
-Потрібен, коли треба відновити пам'ять із попереднього `export`.
-Команда читає `json` або `jsonl` і робить idempotent upsert по `id`, тому той самий export можна безпечно імпортувати повторно.
-
-## Рекомендований робочий цикл
-
-### Для команди
-
-1. Після важливої зустрічі робимо `ingest` по нотатках.
-2. Для особливо важливих рішень додаємо окремі `remember`.
-3. Перед запуском агента будуємо `wake-up`.
-4. Під конкретну задачу даємо агенту `context`.
-
-### Для AI-агента
-
-1. Завантажити маленький `wake-up`.
-2. На конкретну задачу виконати `search` або `context`.
-3. Після завершення роботи зберегти нові рішення через `remember` або `ingest`.
-
-## Як користуватися програмою покроково
-
-1. Один раз створи базу:
-   `memory-kernel init`
-2. Якщо маєш один точний факт або рішення, використовуй `remember`.
-3. Якщо маєш нотатки, стенограму або chat log, використовуй `ingest`.
-4. Перед реальною задачею діставай пам'ять через `search`, `context` або `wake-up`.
-5. Регулярно роби `export`, щоб мати переносний backup пам'яті.
-6. На іншій машині або в новій базі використовуй `import`, щоб відновити експортовану пам'ять.
-
-## Приклади команд
-
-### Ініціалізація
-
-```powershell
-memory-kernel init
-```
-
-### Додати один точний запис
-
-```powershell
-memory-kernel remember `
-  --scope project.ai-memory `
-  --kind decision `
-  --title "Use SQLite FTS5" `
-  --content "We replaced the heavy vector stack with SQLite FTS5 for fast local retrieval."
-```
-
-### Інгест нотаток
-
-```powershell
-memory-kernel ingest `
-  --scope project.ai-memory `
-  --file notes.txt `
-  --source sprint-review `
-  --tags transcript planning
-```
-
-### Пошук
-
-```powershell
-memory-kernel search "prompt budget"
-```
-
-### Побудова context pack
-
-```powershell
-memory-kernel context "How do we keep memory cheap?" --budget-chars 700
-```
-
-### Експорт у JSON
-
-```powershell
-memory-kernel export `
-  --format json `
-  --output exports\memory.json
-```
-
-### Експорт одного scope у JSONL
-
-```powershell
-memory-kernel export `
-  --scope project.ai-memory `
-  --format jsonl `
-  --output exports\ai-memory.jsonl
-```
-
-## Як експортувати пам'ять
-
-### Для backup
-
-```powershell
-memory-kernel export --format json --output exports\memory-backup.json
-```
-
-Це створює один файл зі службовими метаданими, кількістю записів, фільтрами і самим масивом пам'яті.
-
-### Для переносу частини бази
-
-```powershell
-memory-kernel export --scope project.ai-memory --format json --output exports\project-ai-memory.json
-```
-
-Це зручно, коли треба вивезти тільки один проєкт або один простір пам'яті.
-
-### Для pipeline або подальшої обробки
-
-```powershell
-memory-kernel export --scope project.ai-memory --format jsonl --output exports\project-ai-memory.jsonl
-```
-
-`jsonl` зручний, якщо далі файл буде читати інший скрипт, ETL-процес або зовнішній інструмент.
-
-### Що важливо знати
-
-- `export` нічого не змінює в базі, це read-only команда;
-- можна фільтрувати по `scope`, `kind`, `tags` і `limit`;
-- якщо `--output` не вказати, експорт піде в stdout.
-
-## Як імпортувати пам'ять
-
-### Відновити повний snapshot
-
-```powershell
-memory-kernel import --file exports\memory-backup.json
-```
-
-### Імпортувати JSONL-експорт
-
-```powershell
-memory-kernel import --file exports\project-ai-memory.jsonl
-```
-
-### Що важливо знати
-
-- `import` підтримує `json`, `jsonl` і auto-detect по розширенню;
-- повторний імпорт того самого export не повинен плодити дублікати по `id`;
-- під час import зберігаються `id`, `created_at`, `updated_at`, `access_count`;
-- після import записи одразу доступні для `search`, `context`, `wake-up`.
 
 ## Коли краще `remember`, а коли `ingest`
 
 Обирай `remember`, якщо:
 
-- запис уже чітко сформульований;
-- треба контроль над `kind`, `importance`, `certainty`;
+- запис уже сформульований;
+- тобі важливо самому задати `kind`;
 - це ключове рішення або правило.
 
 Обирай `ingest`, якщо:
 
-- є багато сирого тексту;
-- треба швидко витягнути структуровані memory-одиниці;
+- у тебе багато сирого тексту;
+- треба швидко перетворити нотатки на структуровану пам'ять;
 - важливо не плодити дублікати.
 
-## Що краще не зберігати
+## Як експортувати та імпортувати пам'ять
 
-- шумові переписки без рішення;
-- тимчасові емоційні репліки;
-- великі неструктуровані дампи "про всяк випадок";
-- те, що не повинно потрапляти в prompt або локальну БД.
+### Backup усієї пам'яті
+
+```powershell
+memory-kernel export --format json --output exports\memory-backup.json
+```
+
+### Backup одного проєкту
+
+```powershell
+memory-kernel export --scope project.alpha --format json --output exports\project-alpha.json
+```
+
+### Построчний експорт у `jsonl`
+
+```powershell
+memory-kernel export --scope project.alpha --format jsonl --output exports\project-alpha.jsonl
+```
+
+### Відновлення з backup
+
+```powershell
+memory-kernel import --file exports\memory-backup.json
+memory-kernel import --file exports\project-alpha.jsonl
+```
+
+Що важливо:
+
+- `export` нічого не змінює в базі;
+- `import` підтримує `json` і `jsonl`;
+- повторний імпорт того самого export не повинен плодити дублікати по `id`.
+
+## Для кого це підходить
+
+Найкраще підходить, якщо тобі потрібні:
+
+- локальна пам'ять на своїй машині;
+- контроль над тим, що саме зберігається;
+- малий і передбачуваний контекст;
+- простий backup і restore.
+
+Слабше підходить, якщо ти хочеш:
+
+- повністю hosted experience;
+- максимум автоматизації без локального сетапу;
+- consumer-продукт, де все працює "само" без дисципліни записів.
+
+## Стадія проєкту
+
+Поточна стадія: робоча alpha.
+
+Вже є:
+
+- CLI;
+- тести;
+- export / import;
+- optional Rust accelerator;
+- Python fallback без native-збірки;
+- PyPI-пакет.
+
+Ще в роботі:
+
+- готові wheels для основних платформ;
+- guided ingest для нетехнічного користувача;
+- ще простіший onboarding.
 
 ## Native accelerator
 
-### Навіщо він потрібен
+Python-версія — це стабільний базовий шлях.
 
-Щоб витрачати ресурс не на overhead Python-циклів, а на реальну продуктивність:
-
-- швидший ingest;
-- швидший duplicate-aware upsert;
-- швидше ранжування;
-- дешевша збірка контексту.
-
-### Як зібрати
+Якщо хочеш нижчий overhead на гарячому шляху, можна зібрати optional `Rust`-модуль:
 
 ```powershell
 .\scripts\build_native.ps1
 ```
 
-### Як заміряти виграш
+Після цього `memory-kernel stats` покаже, чи активний `accelerator: rust`.
+
+Для замірів:
 
 ```powershell
 python .\scripts\benchmark_ingest.py
-```
-
-```powershell
 python .\scripts\benchmark_upsert.py
 ```
 
-### Експериментальний native ranking
-
-Він уже реалізований, але за замовчуванням вимкнений.
-
-Причина проста:
-
-- для типових малих вибірок кандидата JSON-перехід Python -> Rust -> Python може коштувати дорожче за сам Python ranking;
-- тому default path орієнтований не на "просто все винести в native", а на реальну продуктивність.
-
-Увімкнути його для профілювання можна так:
+Експериментальний native ranking можна вмикати для профілювання:
 
 ```powershell
 $env:MEMORY_KERNEL_EXPERIMENTAL_NATIVE_RANK=1
 ```
 
-## Практичний сенс для продукту
+## Фідбек від перших користувачів
 
-Це ядро потрібне не для "довгої романтичної пам'яті ШІ", а для керованої робочої пам'яті:
+Issue tracker:
+https://github.com/Artem362/memory-kernel/issues
 
-- менше сміття в retrieval;
-- менше витрат на пам'ять;
-- стабільніший prompt;
-- більше контролю над тим, що саме пам'ятає агент;
-- простіший шлях до production.
+Швидкий вибір шаблону:
+https://github.com/Artem362/memory-kernel/issues/new/choose
+
+Шаблон first-run feedback уже лежить у:
+`.github/ISSUE_TEMPLATE/first-run-feedback.yml`
+
+Найкорисніший мінімум у фідбеку:
+
+- звідки ставився пакет;
+- ОС і версія Python;
+- точна команда;
+- що людина очікувала;
+- що сталося насправді.
