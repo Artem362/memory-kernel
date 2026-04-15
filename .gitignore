@@ -1,0 +1,13 @@
+.memory-kernel/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+.venv-pypi/
+.venv-testpypi/
+.ref-mempalace/
+dist/
+build/
+*.egg-info/
+rust/target/
+src/memory_kernel/_native.pyd

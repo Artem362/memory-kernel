@@ -1,0 +1,45 @@
+[project]
+name = "amormorri-memory-kernel"
+version = "0.1.0"
+description = "Focused local memory for AI agents with SQLite FTS5 and deterministic context packing."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["memory", "ai", "agents", "llm", "sqlite", "context", "fts5"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+authors = [
+  { name = "AmorMorri", email = "amormorri21@gmail.com" }
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Artem362/memory-kernel"
+Repository = "https://github.com/Artem362/memory-kernel"
+"Bug Tracker" = "https://github.com/Artem362/memory-kernel/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<9"]
+accelerator = []
+
+[project.scripts]
+memory-kernel = "memory_kernel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_kernel"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
