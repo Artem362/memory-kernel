@@ -6,10 +6,7 @@ Published package name on PyPI: `amormorri-memory-kernel`
 CLI command after install: `memory-kernel`
 
 Practical guide in Ukrainian, including the operating principle and architecture/data-flow schemas:
-[docs/OPERATING_GUIDE_UK.md](docs/OPERATING_GUIDE_UK.md)
-
-Release notes:
-[CHANGELOG.md](CHANGELOG.md)
+OPERATING_GUIDE_UK.md
 
 It was built with the same useful instinct behind MemPalace in mind: keep memory on the user's machine and retrieve exact context when needed. The difference is that this project deliberately avoids a heavy vector stack and fuzzy always-on retrieval. Instead, it uses:
 
