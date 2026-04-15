@@ -2,8 +2,14 @@
 
 `Memory Kernel` is a lightweight local-first memory core for AI agents.
 
+Published package name on PyPI: `amormorri-memory-kernel`
+CLI command after install: `memory-kernel`
+
 Practical guide in Ukrainian, including the operating principle and architecture/data-flow schemas:
 [docs/OPERATING_GUIDE_UK.md](docs/OPERATING_GUIDE_UK.md)
+
+Release notes:
+[CHANGELOG.md](CHANGELOG.md)
 
 It was built with the same useful instinct behind MemPalace in mind: keep memory on the user's machine and retrieve exact context when needed. The difference is that this project deliberately avoids a heavy vector stack and fuzzy always-on retrieval. Instead, it uses:
 
@@ -20,7 +26,7 @@ For embedded Python usage, `MemoryStore` keeps a long-lived SQLite connection fo
 
 If you do not want to learn the internals first, use it like this:
 
-1. Install it: `pip install -e .`
+1. Install it from PyPI: `pip install amormorri-memory-kernel`
 2. Create the local memory database: `memory-kernel init`
 3. Save one important thing:
    `memory-kernel remember --scope my.project --kind decision --title "What we decided" --content "We will keep memory local on the user's machine."`
@@ -38,13 +44,28 @@ Current stage: working alpha.
 - the package layout, CLI, docs, tests, export/import, and optional Rust accelerator already exist
 - the Python fallback works without Rust
 - the core workflows are usable today for local experimentation and integration
-- packaging for easy end-user distribution is not finished yet
+- the package is now published, but polish for broad end-user distribution is still in progress
 
 Near-term product gaps:
 
 - prebuilt wheels for major platforms
 - a simpler guided ingest flow for non-technical users
 - lighter onboarding for people who do not care about implementation details
+
+## First-Run Feedback
+
+For maintainers collecting feedback from early users, a ready-to-enable GitHub issue template lives at:
+`.github/ISSUE_TEMPLATE/first-run-feedback.yml`
+
+The minimum useful report is:
+
+- where the user installed from: `PyPI`, `TestPyPI`, or local repo
+- OS and Python version
+- the exact command they ran
+- what they expected
+- what actually happened
+
+This is intentionally lightweight so first external users can report friction without writing a long bug report.
 
 ## Who This Is For
 
@@ -92,9 +113,7 @@ The tradeoff is also simple:
 ## Quick Start
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[dev]
+pip install amormorri-memory-kernel
 
 memory-kernel init
 
@@ -119,6 +138,14 @@ memory-kernel ingest ^
   --file notes.txt ^
   --source sprint-review ^
   --tags transcript planning
+```
+
+For local development from the repository instead of PyPI:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -e .[dev]
 ```
 
 ## CLI
