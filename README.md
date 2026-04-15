@@ -1,3 +1,5 @@
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/f13a8ef3-23bb-4801-a5a4-05eeaa4f0041" />
+
 # Memory Kernel
 
 `Memory Kernel` is a small local memory layer for AI agents.
