@@ -1,294 +1,294 @@
 # Memory Kernel
 
-`Memory Kernel` is a lightweight local-first memory core for AI agents.
+`Memory Kernel` is a small local memory layer for AI agents.
+
+It helps you save useful things such as decisions, constraints, tasks, facts, and notes in a local SQLite database, then pull back only the few memories that matter for the current task.
 
 Published package name on PyPI: `amormorri-memory-kernel`
 CLI command after install: `memory-kernel`
 
-Practical guide in Ukrainian, including the operating principle and architecture/data-flow schemas:
+Practical guide in Ukrainian:
 [docs/OPERATING_GUIDE_UK.md](docs/OPERATING_GUIDE_UK.md)
 
 Release notes:
 [CHANGELOG.md](CHANGELOG.md)
 
-It was built with the same useful instinct behind MemPalace in mind: keep memory on the user's machine and retrieve exact context when needed. The difference is that this project deliberately avoids a heavy vector stack and fuzzy always-on retrieval. Instead, it uses:
+## What It Does
 
-- explicit memory kinds: `decision`, `constraint`, `preference`, `task`, `fact`, `note`
-- `SQLite` + `FTS5` for cheap local full-text search
-- deterministic ranking that favors actionable memories over vague notes
-- deterministic transcript ingestion with duplicate-aware updates
-- optional `Rust` accelerator for ingest, duplicate-aware upsert heuristics, and retrieval hot paths
-- context packs with a hard character budget so only useful memory reaches the model
+In plain English, Memory Kernel does 4 things:
 
-For embedded Python usage, `MemoryStore` keeps a long-lived SQLite connection for throughput. Prefer `with MemoryStore(...) as store:` or call `store.close()` when you're done.
+1. Stores memory locally on your machine.
+2. Keeps memory structured enough to stay useful.
+3. Finds relevant records without a heavy vector stack.
+4. Builds a small context pack instead of dumping everything into the prompt.
+
+This project is not trying to create a magical black-box memory. It is trying to create a memory layer you can inspect, control, export, and trust.
 
 ## Start In 5 Minutes
 
-If you do not want to learn the internals first, use it like this:
+If you just want to try it, do this:
 
-1. Install it from PyPI: `pip install amormorri-memory-kernel`
-2. Create the local memory database: `memory-kernel init`
-3. Save one important thing:
-   `memory-kernel remember --scope my.project --kind decision --title "What we decided" --content "We will keep memory local on the user's machine."`
-4. Ask for it back later:
-   `memory-kernel search "local memory"`
-5. Export a backup:
-   `memory-kernel export --format json --output exports\memory.json`
-
-That is enough to start using the project without understanding `FTS5`, ranking formulas, or context packing.
-
-## Project Status
-
-Current stage: working alpha.
-
-- the package layout, CLI, docs, tests, export/import, and optional Rust accelerator already exist
-- the Python fallback works without Rust
-- the core workflows are usable today for local experimentation and integration
-- the package is now published, but polish for broad end-user distribution is still in progress
-
-Near-term product gaps:
-
-- prebuilt wheels for major platforms
-- a simpler guided ingest flow for non-technical users
-- lighter onboarding for people who do not care about implementation details
-
-## First-Run Feedback
-
-For maintainers collecting feedback from early users, a ready-to-enable GitHub issue template lives at:
-`.github/ISSUE_TEMPLATE/first-run-feedback.yml`
-
-Public issue tracker:
-https://github.com/Artem362/memory-kernel/issues
-
-Open the template chooser directly:
-https://github.com/Artem362/memory-kernel/issues/new/choose
-
-The minimum useful report is:
-
-- where the user installed from: `PyPI`, `TestPyPI`, or local repo
-- OS and Python version
-- the exact command they ran
-- what they expected
-- what actually happened
-
-This is intentionally lightweight so first external users can report friction without writing a long bug report.
-
-## Who This Is For
-
-This is a good fit when the end user wants:
-
-- local-first memory on their own machine
-- exact, inspectable records instead of a black-box memory layer
-- small, controlled context instead of always sending a large memory dump
-- backup and restore through plain export files
-
-This is a weaker fit when the end user mainly wants:
-
-- a fully hosted managed memory platform
-- plug-and-play onboarding with no local setup
-- automatic structure from messy notes without reviewing what was saved
-
-## Why this direction
-
-Most AI memory systems fail in two ways:
-
-- they are fuzzy, so low-signal notes come back with the important ones
-- they are heavy, so the memory layer becomes more expensive than the work it is meant to support
-
-This project pushes in the opposite direction:
-
-- store exact text locally
-- require clear scope and kind for every memory
-- rank by lexical match, actionability, certainty, importance, recency, and reuse
-- build small context packs instead of dumping everything into the prompt
-
-## End-User Positioning
-
-For an end user, the value proposition is simple:
-
-- your memory stays on your machine
-- you can inspect what was saved
-- you can export it and move it
-- retrieval is intentionally small and predictable
-
-The tradeoff is also simple:
-
-- this product currently expects a bit more structure and discipline than a consumer-first app
-- the best experience today is for teams and advanced users who want control, not maximum automation
-
-## Quick Start
-
-```bash
+```powershell
 pip install amormorri-memory-kernel
-
 memory-kernel init
-
-memory-kernel remember ^
-  --scope project.ai-memory ^
-  --kind decision ^
-  --title "Switch to SQLite FTS5" ^
-  --content "We are replacing a heavier vector stack with SQLite FTS5 because memory retrieval must stay local, fast, and predictable." ^
-  --tags sqlite performance retrieval ^
-  --importance 0.95 ^
-  --certainty 0.95
-
-memory-kernel search "sqlite retrieval performance"
-memory-kernel context "How should the agent remember architecture decisions?"
-memory-kernel wake-up
-memory-kernel stats
+memory-kernel remember --scope my.project --kind decision --title "Keep memory local" --content "We store memory on the user's machine."
+memory-kernel search "memory local"
 memory-kernel export --format json --output exports\memory.json
-memory-kernel import --file exports\memory.json
-
-memory-kernel ingest ^
-  --scope project.ai-memory ^
-  --file notes.txt ^
-  --source sprint-review ^
-  --tags transcript planning
 ```
 
-For local development from the repository instead of PyPI:
+What happened there:
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
+1. `init` created a local database.
+2. `remember` saved one clear memory.
+3. `search` fetched it back.
+4. `export` created a backup file you can move or restore later.
+
+If you are using the repository instead of PyPI:
+
+```powershell
 pip install -e .[dev]
 ```
 
-## CLI
+## Typical Workflow
 
-### `init`
+Most people will use it like this:
 
-Create the local database in `.memory-kernel/memory.db`.
+1. Save one precise memory with `remember`.
+2. Feed raw notes or transcripts with `ingest`.
+3. Before an agent run, fetch only what matters with `search`, `context`, or `wake-up`.
+4. Periodically export the database for backup.
+5. Restore it elsewhere with `import`.
 
-```bash
-memory-kernel init
-```
+## Which Command To Use
 
 ### `remember`
 
-Store one memory record.
+Use `remember` when you already know exactly what should be saved.
 
-```bash
-memory-kernel remember \
-  --scope project.ai-memory \
-  --kind constraint \
-  --title "Prompt budget stays small" \
-  --content "The agent should load a tiny wake-up pack and fetch deeper memory only when the current task requires it." \
-  --tags prompt context-budget
-```
+Good examples:
 
-### `search`
+- a decision
+- a rule
+- a user preference
+- a project constraint
 
-Find the most relevant exact memories for a query.
-
-```bash
-memory-kernel search "context budget for the agent"
+```powershell
+memory-kernel remember --scope project.alpha --kind decision --title "Use SQLite FTS5" --content "We use SQLite FTS5 for local retrieval."
 ```
 
 ### `ingest`
 
-Turn raw text, notes, or transcript fragments into structured memories without using an LLM.
+Use `ingest` when you have raw text and want the system to split it into structured memories.
 
-```bash
-memory-kernel ingest \
-  --scope project.ai-memory \
-  --file notes.txt \
-  --source sprint-review \
-  --tags transcript planning
+Good examples:
+
+- meeting notes
+- a transcript
+- a rough planning document
+- an agent session log
+
+```powershell
+memory-kernel ingest --scope project.alpha --file notes.txt --source sprint-review --tags planning transcript
+```
+
+### `search`
+
+Use `search` when you want a few relevant exact memories for a query.
+
+```powershell
+memory-kernel search "context budget"
 ```
 
 ### `context`
 
-Build a small pack for an agent prompt with a hard budget.
+Use `context` when you want a compact pack for an agent prompt.
 
-```bash
+```powershell
 memory-kernel context "How do we keep memory cheap?" --budget-chars 700
 ```
 
 ### `wake-up`
 
-Return the currently hottest memories without a search query.
+Use `wake-up` when you want a small "hot memory" pack before a task starts.
 
-```bash
+```powershell
 memory-kernel wake-up --budget-chars 500
+```
+
+### `stats`
+
+Use `stats` when you want to see database size and whether the native accelerator is active.
+
+```powershell
+memory-kernel stats
 ```
 
 ### `export`
 
-Export memories for backup, migration, or offline inspection.
+Use `export` for backup, migration, or inspection.
 
-```bash
+```powershell
 memory-kernel export --format json --output exports\memory.json
-memory-kernel export --scope project.ai-memory --format jsonl --output exports\ai-memory.jsonl
+memory-kernel export --scope project.alpha --format jsonl --output exports\project-alpha.jsonl
 ```
-
-`json` writes one structured export document with metadata and filters.
-`jsonl` writes one memory per line and is convenient for pipelines or later processing.
 
 ### `import`
 
-Restore memories from a previous export.
+Use `import` to restore a previous export.
 
-```bash
+```powershell
 memory-kernel import --file exports\memory.json
-memory-kernel import --file exports\ai-memory.jsonl
+memory-kernel import --file exports\project-alpha.jsonl
 ```
 
 `import` is idempotent for the same exported records because it upserts by memory `id`.
 
-## Typical Workflow
+## How It Works
 
-1. Run `memory-kernel init` once for a new database.
-2. Save precise decisions with `remember`, or large raw notes with `ingest`.
-3. Before an agent task, use `search`, `context`, or `wake-up` to fetch only the needed memory.
-4. Periodically run `export` to keep a portable backup of the memory base.
-5. On another machine or a fresh database, run `import` to restore the exported memory.
+The core idea is simple:
 
-## Schema
+1. Store exact text locally.
+2. Search cheaply with `SQLite` and `FTS5`.
+3. Rank results deterministically instead of fuzzily.
+4. Return a small context pack with a hard character budget.
 
-Each memory has:
+That is how Memory Kernel reduces both blur and overhead.
 
-- `scope`: where it belongs, for example `project.ai-memory` or `team.core`
-- `kind`: one of the supported kinds
-- `title`: short stable label
-- `content`: exact source text
-- `summary`: short deterministic summary
-- `tags`: searchable labels
-- `importance`: how important this memory is to outcomes
-- `certainty`: how reliable the memory is
+### Data Flow
 
-Those fields are intentional. They make retrieval sharper than a flat blob store while staying much lighter than a full vector database.
-
-## Tests
-
-```bash
-pytest
+```mermaid
+flowchart TD
+    A[Raw input: note, transcript, command] --> B{Entry mode}
+    B -->|remember| C[One validated memory]
+    B -->|ingest| D[Split into memory candidates]
+    D --> E[Infer kind, title, summary, tags, importance, certainty]
+    E --> F[Duplicate-aware upsert]
+    C --> F
+    F --> G[(SQLite + FTS5)]
+    G --> H[Search candidates]
+    H --> I[Deterministic ranking]
+    I --> J[Top memories]
+    J --> K[Context pack with hard size limit]
+    K --> L[LLM or AI agent]
 ```
+
+### Component Diagram
+
+```mermaid
+flowchart LR
+    U[User or Agent] --> CLI[CLI or Python API]
+    CLI --> STORE[MemoryStore]
+    STORE --> DB[(SQLite + FTS5)]
+    STORE --> ACCEL[Optional Rust accelerator]
+    STORE --> PACK[Context pack builder]
+    PACK --> MODEL[LLM]
+```
+
+### Memory Record Schema
+
+```text
+MemoryRecord
+|- scope
+|- kind
+|- title
+|- summary
+|- content
+|- tags
+|- source
+|- importance
+|- certainty
+|- access_count
+|- created_at
+|- updated_at
+\- last_accessed_at
+```
+
+## Why It Stays Lightweight
+
+Memory Kernel stays small on purpose:
+
+- `SQLite` + `FTS5` instead of a mandatory vector database
+- deterministic ranking instead of fuzzy always-on retrieval
+- duplicate-aware updates instead of endless memory growth
+- hard context budgets instead of large prompt dumps
+- optional `Rust` acceleration only where it actually helps
+
+For embedded Python usage, `MemoryStore` keeps a long-lived SQLite connection for throughput. Prefer `with MemoryStore(...) as store:` or call `store.close()` when you are done.
+
+## Who It Is For
+
+This is a good fit when you want:
+
+- local-first memory on your own machine
+- clear records you can inspect
+- small, predictable retrieval
+- easy export and restore
+
+This is a weaker fit when you want:
+
+- a fully hosted managed platform
+- zero local setup
+- fully automatic cleanup of messy notes with no review
+
+## Project Status
+
+Current stage: working alpha.
+
+Already working:
+
+- package layout
+- CLI
+- tests
+- export and import
+- optional Rust accelerator
+- Python fallback without Rust
+
+Still in progress:
+
+- prebuilt wheels for major platforms
+- a simpler guided ingest flow
+- even lighter onboarding for non-technical users
 
 ## Native Accelerator
 
-The Python core is the stable fallback. When you want lower overhead on the ingest and heuristic ranking path, build the optional `Rust` module:
+The Python implementation is the stable default.
+
+If you want lower overhead on ingest and heuristic hot paths, build the optional `Rust` module:
 
 ```powershell
 .\scripts\build_native.ps1
 ```
 
-After that, `memory-kernel stats` will report `accelerator: rust` and show which ranking/upsert engines are active.
+After that, `memory-kernel stats` will show whether `accelerator: rust` is active.
 
-By default, the `Rust` path accelerates ingest and text heuristics. Experimental native ranking / pack rendering is available, but kept off by default because the current JSON bridge is only worth profiling on larger candidate batches:
+You can benchmark the current hot paths with:
+
+```powershell
+python .\scripts\benchmark_ingest.py
+python .\scripts\benchmark_upsert.py
+```
+
+Experimental native ranking is available for profiling:
 
 ```powershell
 $env:MEMORY_KERNEL_EXPERIMENTAL_NATIVE_RANK=1
 ```
 
-To compare the heuristic ingest path against the Python fallback:
+## Feedback
 
-```powershell
-python .\scripts\benchmark_ingest.py
-```
+Issue tracker:
+https://github.com/Artem362/memory-kernel/issues
 
-To benchmark duplicate-aware upsert throughput:
+Issue template chooser:
+https://github.com/Artem362/memory-kernel/issues/new/choose
 
-```powershell
-python .\scripts\benchmark_upsert.py
-```
+There is also a first-run feedback template in:
+`.github/ISSUE_TEMPLATE/first-run-feedback.yml`
+
+The most useful early report includes:
+
+- where you installed from
+- your OS and Python version
+- the exact command you ran
+- what you expected
+- what actually happened
