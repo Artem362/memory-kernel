@@ -15,6 +15,28 @@ Practical guide in Ukrainian:
 Release notes:
 [CHANGELOG.md](CHANGELOG.md)
 
+## Contents
+
+- [What It Does](#what-it-does)
+- [Start In 5 Minutes](#start-in-5-minutes)
+- [Typical Workflow](#typical-workflow)
+- [Which Command To Use](#which-command-to-use)
+  - Write: [`remember`](#remember), [`ingest`](#ingest)
+  - Read: [`search`](#search), [`context`](#context), [`wake-up`](#wake-up), [`stats`](#stats)
+  - Inspect / edit: [`list`](#list), [`show`](#show), [`update`](#update), [`delete`](#delete)
+  - Maintain: [`completion`](#completion), [`verify`](#verify)
+  - Backup: [`export`](#export), [`import`](#import)
+- [How It Works](#how-it-works)
+  - [Data Flow](#data-flow)
+  - [Component Diagram](#component-diagram)
+  - [Memory Record Schema](#memory-record-schema)
+  - [Ukrainian Inflection Bridging](#ukrainian-inflection-bridging)
+- [Why It Stays Lightweight](#why-it-stays-lightweight)
+- [Who It Is For](#who-it-is-for)
+- [Project Status](#project-status)
+- [Native Accelerator](#native-accelerator)
+- [Feedback](#feedback)
+
 ## What It Does
 
 In plain English, Memory Kernel does 4 things:
@@ -58,8 +80,9 @@ Most people will use it like this:
 1. Save one precise memory with `remember`.
 2. Feed raw notes or transcripts with `ingest`.
 3. Before an agent run, fetch only what matters with `search`, `context`, or `wake-up`.
-4. Periodically export the database for backup.
-5. Restore it elsewhere with `import`.
+4. Inspect, fix, or remove single records with `show`, `update`, or `delete`.
+5. Periodically export the database for backup.
+6. Restore it elsewhere with `import`.
 
 ## Which Command To Use
 
@@ -93,6 +116,19 @@ Good examples:
 memory-kernel ingest --scope project.alpha --file notes.txt --source sprint-review --tags planning transcript
 ```
 
+Add `--dry-run` to preview the segments and inferred kinds/titles/tags without writing to the database. Useful before committing a long file.
+
+```powershell
+memory-kernel ingest --scope project.alpha --file notes.txt --dry-run
+memory-kernel ingest --scope project.alpha --text "..." --dry-run --json
+```
+
+Add `--interactive` for a guided flow that prompts for scope, source, tags, and the text itself, then shows a preview and asks for confirmation before saving. Helpful for first-time users or for ad-hoc captures from the terminal without remembering the flag names.
+
+```powershell
+memory-kernel ingest --interactive
+```
+
 ### `search`
 
 Use `search` when you want a few relevant exact memories for a query.
@@ -123,7 +159,80 @@ Use `stats` when you want to see database size and whether the native accelerato
 
 ```powershell
 memory-kernel stats
+memory-kernel stats --since 7d
+memory-kernel stats --since 2026-04-01
 ```
+
+`--since` adds recent-activity counts (created and updated since the cutoff) plus a per-kind breakdown for the window. Accepts either a relative form like `7d` or an ISO date.
+
+### `list`
+
+Use `list` to browse recent memories (most recently updated first) with optional filters.
+
+```powershell
+memory-kernel list
+memory-kernel list --scope project.alpha --limit 50
+memory-kernel list --kind decision --tags rust memory
+memory-kernel list --json
+```
+
+Default limit is 20. The output shows `id`, `kind/scope`, `title`, and the timestamps so you can pipe ids into `show`/`update`/`delete`.
+
+### `show`
+
+Use `show` when you have a memory id (printed by `search`, `remember --json`, or `export`) and want the full record.
+
+```powershell
+memory-kernel show --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
+memory-kernel show --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b --json
+```
+
+### `update`
+
+Use `update` to fix specific fields on an existing memory without re-importing the whole database.
+
+```powershell
+memory-kernel update --id 9f1e... --title "Renamed memory" --importance 0.95
+memory-kernel update --id 9f1e... --tags rust memory acceleration
+memory-kernel update --id 9f1e... --tags
+```
+
+Only the fields you pass change. Pass `--tags` with no values to clear tags. Pass `--kind`, `--importance`, or `--certainty` to revise validation-bound fields.
+
+### `delete`
+
+Use `delete` to drop a memory you saved by mistake or that no longer applies.
+
+```powershell
+memory-kernel delete --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
+```
+
+The command exits non-zero if the id does not exist, so wrap it in shell logic if you script around it.
+
+### `completion`
+
+Use `completion` to print a shell completion script for `memory-kernel`. The script is generated dynamically from the current parser, so it stays in sync as commands are added.
+
+```powershell
+memory-kernel completion powershell | Out-File -Encoding utf8 $PROFILE.CurrentUserAllHosts -Append
+memory-kernel completion bash > ~/.local/share/bash-completion/completions/memory-kernel
+```
+
+After installing, `memory-kernel <Tab><Tab>` shows all subcommands; `memory-kernel remember --<Tab>` lists flags for that command; `memory-kernel remember --kind <Tab>` cycles through valid `kind` values.
+
+### `verify`
+
+Use `verify` to check that the database is internally consistent: schema version is current, derived columns (`stems_text`, `fingerprint`) match the source content, and the FTS5 index row count matches the memories table.
+
+```powershell
+memory-kernel verify
+memory-kernel verify --repair
+memory-kernel verify --repair --json
+```
+
+Without `--repair`, exit code is `0` when healthy and `1` when issues are found. With `--repair`, mismatches are recomputed in-place and the FTS index is rebuilt if its row count drifted; exit code is `0` if everything was fixed.
+
+Useful after restoring from a manual backup, after editing the database with raw SQL, or as a periodic sanity check in CI.
 
 ### `export`
 
@@ -204,6 +313,23 @@ MemoryRecord
 |- updated_at
 \- last_accessed_at
 ```
+
+### Ukrainian Inflection Bridging
+
+Search bridges Ukrainian morphology in two layers:
+
+1. **Suffix stemming on the query** expands each term to a short stem (`вирішили` → `виріш*`). This finds `вирішили`, `вирішення`, `вирішує`, `вирішена` — anything sharing the same prefix.
+2. **Deep stemming of stored content** (suffix + prefix stripping) lives in a separate `stems_text` column inside the FTS5 index. The query also matches against deep stems exactly (`stems_text:ріш`). This bridges across different prefixes, so a search for `рішення` also finds `вирішили` and `невирішене` — they all collapse to the same `ріш` stem.
+
+Stored title/summary/content/tags stay exact, so fingerprints, deduplication, ranking, and export all remain deterministic. Only the FTS5 index gains a derived `stems_text` column.
+
+Disable with:
+
+```powershell
+$env:MEMORY_KERNEL_DISABLE_STEMMER=1
+```
+
+Disabling only affects the query side. `stems_text` keeps being populated on writes so toggling the env back on does not require a rebuild.
 
 ## Why It Stays Lightweight
 

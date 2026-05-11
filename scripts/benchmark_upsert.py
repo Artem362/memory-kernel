@@ -29,6 +29,9 @@ BENCH_CODE = textwrap.dedent(
         "We decided to move the memory hot path to Rust.",
         "We decided to move the memory hot path to Rust because ingest must stay fast.",
         "We decided to move the memory hot path to Rust because ingest and ranking must stay fast under production load.",
+        "Вирішили перенести гарячий шлях памяті у Rust.",
+        "Вирішили перенести гарячий шлях памяті у Rust для зменшення накладних витрат при інжесті.",
+        "Вирішили перенести гарячий шлях памяті у Rust бо інжест і ранжування повинні залишатись швидкими під навантаженням продакшну.",
     ]
 
     loops = 3000

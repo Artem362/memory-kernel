@@ -28,3 +28,8 @@ def has_native_acceleration() -> bool:
 
 def has_experimental_native_ranking() -> bool:
     return native_accel is not None and _experimental_native_rank_enabled()
+
+
+def light_stem_enabled() -> bool:
+    value = os.getenv("MEMORY_KERNEL_DISABLE_STEMMER", "")
+    return value.strip().lower() not in {"1", "true", "yes", "on"}

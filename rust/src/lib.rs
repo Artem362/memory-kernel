@@ -9,6 +9,9 @@ const STOP_WORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "do", "for", "from", "how", "if", "in",
     "into", "is", "it", "of", "on", "or", "that", "the", "this", "to", "we", "what", "when",
     "where", "why", "with",
+    "але", "без", "було", "бути", "в", "ви", "вже", "він", "вона", "воно", "для", "до", "є",
+    "за", "з", "і", "й", "її", "їх", "коли", "ми", "на", "не", "ні", "про", "та", "те", "ти",
+    "то", "у", "це", "цей", "ця", "що", "як",
 ];
 
 const KIND_HINTS_DECISION: &[&str] = &[
@@ -21,18 +24,28 @@ const KIND_HINTS_DECISION: &[&str] = &[
     "choose",
     "chosen",
     "agreed",
+    "вирішили",
+    "обрали",
+    "переходимо",
+    "замінюємо",
 ];
 
 const KIND_HINTS_CONSTRAINT: &[&str] = &[
     "must",
     "must stay",
     "cannot",
-    "can't",
+    "cant",
     "never",
     "limit",
     "budget",
     "required",
     "should stay",
+    "обовязково",
+    "повинно",
+    "має",
+    "не можна",
+    "ліміт",
+    "бюджет",
 ];
 
 const KIND_HINTS_TASK: &[&str] = &[
@@ -44,11 +57,37 @@ const KIND_HINTS_TASK: &[&str] = &[
     "fix",
     "add",
     "ship",
+    "зробити",
+    "треба",
+    "потрібно",
+    "додати",
+    "виправити",
+    "реалізувати",
 ];
 
-const KIND_HINTS_PREFERENCE: &[&str] = &["prefer", "would rather", "want", "avoid", "ideally"];
+const KIND_HINTS_PREFERENCE: &[&str] = &[
+    "prefer",
+    "would rather",
+    "want",
+    "avoid",
+    "ideally",
+    "краще",
+    "хочемо",
+    "уникаємо",
+    "бажано",
+];
 
-const KIND_HINTS_FACT: &[&str] = &["currently", "today", "uses", "contains", "runs on"];
+const KIND_HINTS_FACT: &[&str] = &[
+    "currently",
+    "today",
+    "uses",
+    "contains",
+    "runs on",
+    "станом",
+    "використовує",
+    "містить",
+    "працює на",
+];
 
 const STRONG_SIGNAL_WORDS: &[&str] = &[
     "must",
@@ -59,9 +98,45 @@ const STRONG_SIGNAL_WORDS: &[&str] = &[
     "blocked",
     "important",
     "never",
+    "обовязково",
+    "критично",
+    "дедлайн",
+    "блокер",
 ];
 
-const HEDGE_WORDS: &[&str] = &["maybe", "might", "perhaps", "probably", "consider", "idea", "possibly"];
+const UKRAINIAN_SUFFIXES: &[&str] = &[
+    "ування", "аються", "ається", "юються", "ується",
+    "ються", "ється",
+    "ення", "ання", "іння", "ивши", "авши", "уючи",
+    "ила", "или", "ило", "ати", "яти", "ити", "іти", "ути",
+    "ого", "ому", "ими", "ями",
+    "ена", "ане", "ені", "ані", "ене",
+    "ить", "ать", "ять", "ють", "уть", "ємо",
+    "ою", "ів", "ам", "ом", "ах", "их", "ує",
+];
+
+const UKRAINIAN_PREFIXES: &[&str] = &[
+    "пере",
+    "роз", "при", "над", "під", "про", "від",
+    "ви", "за", "на", "по", "до", "не", "об",
+];
+
+const LIGHT_STEM_MIN_LEN: usize = 3;
+const DEEP_STEM_MIN_LEN: usize = 3;
+const DEEP_STEM_MAX_ITERATIONS: usize = 2;
+
+const HEDGE_WORDS: &[&str] = &[
+    "maybe",
+    "might",
+    "perhaps",
+    "probably",
+    "consider",
+    "idea",
+    "possibly",
+    "можливо",
+    "мабуть",
+    "ідея",
+];
 
 const DECISION_PREFIXES: &[&str] = &[
     "we decided to",
@@ -71,11 +146,47 @@ const DECISION_PREFIXES: &[&str] = &[
     "switch to",
     "adopt",
     "use",
+    "вирішили",
+    "обрали",
+    "будемо",
+    "переходимо на",
+    "замінюємо",
 ];
 
-const CONSTRAINT_PREFIXES: &[&str] = &["must", "must stay", "cannot", "never", "should"];
-const TASK_PREFIXES: &[&str] = &["todo:", "todo", "need to", "implement", "fix", "add"];
-const PREFERENCE_PREFIXES: &[&str] = &["prefer", "want", "avoid"];
+const CONSTRAINT_PREFIXES: &[&str] = &[
+    "must",
+    "must stay",
+    "cannot",
+    "never",
+    "should",
+    "обовязково",
+    "повинно",
+    "має",
+    "не можна",
+];
+const TASK_PREFIXES: &[&str] = &[
+    "todo:",
+    "todo",
+    "need to",
+    "implement",
+    "fix",
+    "add",
+    "зробити",
+    "треба",
+    "потрібно",
+    "додати",
+    "виправити",
+    "реалізувати",
+];
+const PREFERENCE_PREFIXES: &[&str] = &[
+    "prefer",
+    "want",
+    "avoid",
+    "краще",
+    "хочемо",
+    "уникаємо",
+    "бажано",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RankCandidate {
@@ -142,6 +253,7 @@ fn canonicalize_text(value: &str) -> String {
     let lowered = value
         .chars()
         .flat_map(|ch| ch.to_lowercase())
+        .filter(|ch| !matches!(ch, '\'' | '\u{2019}' | '\u{2018}' | '\u{02bc}'))
         .map(|ch| {
             if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch.is_whitespace() {
                 ch
@@ -358,10 +470,10 @@ fn infer_kind_internal(text: &str) -> &'static str {
     if lowered.starts_with("note") {
         scores[5] += 2;
     }
-    if contains_word(&lowered, &["must", "never", "cannot"]) {
+    if contains_word(&lowered, &["must", "never", "cannot", "повинно", "не можна"]) {
         scores[1] += 1;
     }
-    if contains_word(&lowered, &["decided", "switch to", "replace"]) {
+    if contains_word(&lowered, &["decided", "switch to", "replace", "вирішили", "обрали"]) {
         scores[0] += 1;
     }
 
@@ -680,6 +792,71 @@ fn make_excerpt_internal(summary: &str, content: &str, terms: &[String], max_cha
         excerpt = format!("{}...", trimmed.trim_end());
     }
     excerpt
+}
+
+fn light_stem_internal(term: &str) -> String {
+    let term_chars = term.chars().count();
+    if term_chars <= LIGHT_STEM_MIN_LEN {
+        return term.to_string();
+    }
+    for suffix in UKRAINIAN_SUFFIXES {
+        if term.ends_with(suffix) {
+            let suffix_chars = suffix.chars().count();
+            if term_chars - suffix_chars >= LIGHT_STEM_MIN_LEN {
+                let stem_byte_end = term.len() - suffix.len();
+                return term[..stem_byte_end].to_string();
+            }
+        }
+    }
+    term.to_string()
+}
+
+fn strip_ukrainian_prefix_internal(term: &str) -> String {
+    let mut current = term.to_string();
+    for _ in 0..DEEP_STEM_MAX_ITERATIONS {
+        let current_chars = current.chars().count();
+        if current_chars <= DEEP_STEM_MIN_LEN {
+            break;
+        }
+        let mut stripped: Option<String> = None;
+        for prefix in UKRAINIAN_PREFIXES {
+            if current.starts_with(prefix) {
+                let prefix_chars = prefix.chars().count();
+                if current_chars - prefix_chars >= DEEP_STEM_MIN_LEN {
+                    stripped = Some(current[prefix.len()..].to_string());
+                    break;
+                }
+            }
+        }
+        match stripped {
+            Some(next) if next != current => current = next,
+            _ => break,
+        }
+    }
+    current
+}
+
+fn deep_stem_internal(term: &str) -> String {
+    strip_ukrainian_prefix_internal(&light_stem_internal(term))
+}
+
+fn compute_stems_text_internal(title: &str, content: &str, tags: &[String]) -> String {
+    let mut parts: Vec<String> = vec![title.to_string(), content.to_string()];
+    if !tags.is_empty() {
+        parts.push(tags.join(" "));
+    }
+    let combined = parts.join(" ");
+    let terms = semantic_terms_internal(&combined, None);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stems: Vec<String> = Vec::new();
+    for term in terms {
+        let stem = deep_stem_internal(&term);
+        if !stem.is_empty() && !seen.contains(&stem) {
+            seen.insert(stem.clone());
+            stems.push(stem);
+        }
+    }
+    stems.join(" ")
 }
 
 fn token_overlap_score_internal(left: &str, right: &str) -> f64 {
@@ -1012,6 +1189,21 @@ fn merge_memory_fields(
 }
 
 #[pyfunction]
+fn light_stem(term: &str) -> String {
+    light_stem_internal(term)
+}
+
+#[pyfunction]
+fn deep_stem(term: &str) -> String {
+    deep_stem_internal(term)
+}
+
+#[pyfunction]
+fn compute_stems_text(title: &str, content: &str, tags: Vec<String>) -> String {
+    compute_stems_text_internal(title, content, &tags)
+}
+
+#[pyfunction]
 fn rank_rows_tuples(
     rows: Vec<(usize, String, String, String, String, String, f64, f64, i64, String)>,
     terms: Vec<String>,
@@ -1130,6 +1322,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(merge_sources, m)?)?;
     m.add_function(wrap_pyfunction!(find_duplicate_candidate, m)?)?;
     m.add_function(wrap_pyfunction!(merge_memory_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(light_stem, m)?)?;
+    m.add_function(wrap_pyfunction!(deep_stem, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_stems_text, m)?)?;
     m.add_function(wrap_pyfunction!(rank_rows_tuples, m)?)?;
     m.add_function(wrap_pyfunction!(rank_rows_json, m)?)?;
     m.add_function(wrap_pyfunction!(render_pack_json, m)?)?;

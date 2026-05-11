@@ -17,6 +17,11 @@ SAMPLE_TEXT = """
 - TODO: benchmark ingest throughput against the Python fallback.
 - We prefer exact retrieval with SQLite FTS5 over fuzzy always-on vector search.
 - The current kernel stores decisions, constraints, tasks, preferences, facts, and notes.
+- Вирішили перенести гарячий шлях памяті у Rust для зменшення накладних витрат.
+- Памʼять повинно бути локально, дешево, з жорстким бюджетом контексту.
+- TODO: треба зробити бенчмарк інжесту проти Python fallback.
+- Краще точний пошук через SQLite FTS5, ніж розмитий векторний пошук завжди.
+- Ядро використовує SQLite FTS5 для локального лексичного пошуку та зберігає рішення.
 """.strip()
 
 
@@ -31,6 +36,7 @@ BENCH_CODE = textwrap.dedent(
     from memory_kernel.accelerator import has_native_acceleration
     from memory_kernel.store import (
         MemoryStore,
+        compute_stems_text,
         derive_candidate_tags,
         derive_summary,
         derive_title,
@@ -80,11 +86,12 @@ BENCH_CODE = textwrap.dedent(
         segments = split_memory_candidates(text, max_items=32, max_chars=320)
         for segment in segments:
             kind = infer_kind(segment)
-            derive_title(segment, kind)
+            title = derive_title(segment, kind)
             derive_summary(segment)
             infer_importance(segment, kind)
             infer_certainty(segment, kind)
-            derive_candidate_tags(segment, base_tags=("benchmark", "memory"))
+            tags = derive_candidate_tags(segment, base_tags=("benchmark", "memory"))
+            compute_stems_text(title, segment, tags)
             total_items += 1
     ingest_elapsed = perf_counter() - ingest_start
 

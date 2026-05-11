@@ -48,10 +48,12 @@ pip install -e .[dev]
 Найпростіший робочий сценарій такий:
 
 1. Зберігай точні рішення через `remember`.
-2. Закидай сирі нотатки або стенограми через `ingest`.
+2. Закидай сирі нотатки або стенограми через `ingest` (з опційним `--dry-run`, щоб подивитись, як буде розпарсене, перед записом).
 3. Перед задачею діставай потрібне через `search`, `context` або `wake-up`.
-4. Періодично роби `export`, щоб мати backup.
-5. Якщо треба перенести систему, використовуй `import`.
+4. Переглядай, виправляй або видаляй окремі записи через `list`, `show`, `update`, `delete`.
+5. Періодично роби `export`, щоб мати backup.
+6. Якщо треба перенести систему, використовуй `import`.
+7. Час від часу запускай `verify`, щоб переконатись, що похідні поля (`stems_text`, `fingerprint`) і FTS-індекс не розійшлись із джерелом.
 
 ## Яку команду коли використовувати
 
@@ -85,6 +87,19 @@ memory-kernel remember --scope project.alpha --kind decision --title "Use SQLite
 memory-kernel ingest --scope project.alpha --file notes.txt --source sprint-review --tags planning transcript
 ```
 
+Додай `--dry-run`, щоб побачити, як система розіб'є текст на сегменти й що для них виведе (`kind`, `title`, `tags`, `importance`, `certainty`) — без запису в базу:
+
+```powershell
+memory-kernel ingest --scope project.alpha --file notes.txt --dry-run
+memory-kernel ingest --scope project.alpha --text "..." --dry-run --json
+```
+
+Якщо не хочеться згадувати назви флагів — додай `--interactive`. Команда сама запитає `scope`, `source`, `tags`, потім дозволить вставити текст (Ctrl+Z + Enter на Windows або Ctrl+D на Linux/macOS завершує введення), покаже preview і запитає підтвердження перед записом.
+
+```powershell
+memory-kernel ingest --interactive
+```
+
 ### `search`
 
 Використовуй, коли треба знайти кілька точних релевантних записів.
@@ -115,7 +130,80 @@ memory-kernel wake-up --budget-chars 500
 
 ```powershell
 memory-kernel stats
+memory-kernel stats --since 7d
+memory-kernel stats --since 2026-04-01
 ```
+
+`--since` додає лічильники свіжої активності (скільки записів створено й оновлено від відрізку часу, плюс розбиття за `kind`). Приймає або відносний формат `7d`, або ISO-дату.
+
+### `list`
+
+Використовуй, щоб переглянути список свіжих записів із опційними фільтрами — натуральне доповнення до `show`/`update`/`delete`, бо без `id` ти не знаєш, що саме передавати.
+
+```powershell
+memory-kernel list
+memory-kernel list --scope project.alpha --limit 50
+memory-kernel list --kind decision --tags rust memory
+memory-kernel list --json
+```
+
+За замовчуванням ліміт 20, сортування — найсвіжіші зверху (`updated_at DESC`).
+
+### `show`
+
+Використовуй, коли вже маєш `id` (з `list`, `search`, `remember --json` або `export`) і хочеш побачити повний запис.
+
+```powershell
+memory-kernel show --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
+memory-kernel show --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b --json
+```
+
+### `update`
+
+Використовуй, щоб виправити окремі поля у вже збереженому записі — без re-import-у або редагування JSON.
+
+```powershell
+memory-kernel update --id 9f1e... --title "Нова назва" --importance 0.95
+memory-kernel update --id 9f1e... --tags rust memory acceleration
+memory-kernel update --id 9f1e... --tags
+```
+
+Змінюються тільки ті поля, які ти явно передав. `--tags` без значень очищує теги. Після оновлення `fingerprint` і `stems_text` перераховуються автоматично.
+
+### `delete`
+
+Використовуй, щоб прибрати запис, який зберігся помилково або більше не актуальний.
+
+```powershell
+memory-kernel delete --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
+```
+
+Команда повертає ненульовий код, якщо `id` не знайдено — зручно для скриптів.
+
+### `completion`
+
+Використовуй, щоб згенерувати скрипт автодоповнення для shell. Скрипт будується з парсера динамічно, тому залишається актуальним при додаванні нових команд.
+
+```powershell
+memory-kernel completion powershell | Out-File -Encoding utf8 $PROFILE.CurrentUserAllHosts -Append
+memory-kernel completion bash > ~/.local/share/bash-completion/completions/memory-kernel
+```
+
+Після встановлення `memory-kernel <Tab><Tab>` покаже всі команди, `memory-kernel remember --<Tab>` — флаги для цієї команди, `memory-kernel remember --kind <Tab>` — допустимі значення `kind`.
+
+### `verify`
+
+Використовуй, щоб перевірити, що база внутрішньо консистентна: схема правильної версії, похідні поля (`stems_text`, `fingerprint`) збігаються з контентом, кількість рядків у FTS-індексі дорівнює кількості записів у `memories`.
+
+```powershell
+memory-kernel verify
+memory-kernel verify --repair
+memory-kernel verify --repair --json
+```
+
+Без `--repair` exit code = `0` для здорової бази й `1` коли знайдено розходження. З `--repair` система перераховує неправильні поля на місці й, за потреби, перебудовує FTS-індекс — тоді exit code = `0`, якщо все вдалось виправити.
+
+Корисно після відновлення з ручного backup, після прямого редагування БД через SQL або як періодична перевірка в CI.
 
 ### `export`
 
@@ -217,6 +305,31 @@ MemoryRecord
 \- last_accessed_at
 ```
 
+## Робота з українською мовою
+
+Memory Kernel свідомо враховує особливості української морфології, без важких залежностей.
+
+### Апостроф не ламає токени
+
+`canonicalize_text` спочатку прибирає всі варіанти апострофа (`'`, `'`, `'`, `ʼ`), а вже потім розбиває текст на слова. Тому `обов'язково` залишається одним токеном `обовязково` і коректно матчиться з KIND_HINTS, замість того щоб розпадатись на `обов` + `язково`. Те саме для `пам'ять`, `п'ять` тощо.
+
+### Bridge через спільний корінь
+
+Пошук розширює кожен термін у запиті в дві сторони:
+
+1. **Суфіксний стем** (`light_stem`) дає префікс-вираз для FTS5: `вирішили` → `виріш*`. Це знаходить `вирішили`, `вирішення`, `вирішує`, `вирішена` — все, що починається з `виріш`.
+2. **Глибокий стем** (`deep_stem` = суфікс + ітеративне зрізання префіксів `пере`/`роз`/`при`/`над`/`під`/`про`/`від`/`ви`/`за`/`на`/`по`/`до`/`не`/`об`) рахується для контенту під час запису й зберігається в окремій колонці `stems_text` всередині FTS5. Запит теж рахує deep stem і шукає його точно: `stems_text:ріш`. Це дозволяє знайти запис із `вирішили` за запитом `рішення` — обидва зводяться до `ріш`.
+
+Оригінальний текст у `title`/`summary`/`content`/`tags` не змінюється, тому `fingerprint`, дедупа, ranking і export працюють як раніше — детерміновано й без розмитості.
+
+### Як вимкнути
+
+Якщо стемінг створює зайвий шум для твого випадку — вимкни через env-флаг (вплине тільки на запит, `stems_text` далі заповнюється на запис, тож при поверненні флагу не треба rebuild):
+
+```powershell
+$env:MEMORY_KERNEL_DISABLE_STEMMER=1
+```
+
 ## Чому це легше за важкі memory-стеки
 
 - не потрібен обов'язковий vector DB;
@@ -293,10 +406,11 @@ memory-kernel import --file exports\project-alpha.jsonl
 
 Вже є:
 
-- CLI;
-- тести;
+- CLI з повним набором команд: `init`, `remember`, `ingest` (+ `--dry-run`), `search`, `context`, `wake-up`, `list`, `show`, `update`, `delete`, `verify`, `stats` (+ `--since`), `export`, `import`;
+- українська-friendly канонікалізація (апостроф) і пошук із bridge через спільний корінь;
+- тести (88+);
 - export / import;
-- optional Rust accelerator;
+- native Rust accelerator з повним набором гарячих шляхів (інференс, ranking, дедупа, обчислення стемів);
 - Python fallback без native-збірки;
 - PyPI-пакет.
 

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
-from .store import MemoryInput, MemoryStore, VALID_KINDS, utc_now_iso
+from .store import MemoryInput, MemoryRecord, MemoryStore, VALID_KINDS, parse_timestamp, utc_now_iso
+
+
+_SINCE_RELATIVE_RE = re.compile(r"^(\d+)d$")
 
 
 DEFAULT_DB_PATH = Path(".memory-kernel") / "memory.db"
@@ -42,8 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest",
         help="Ingest raw text or a file and extract structured memories.",
     )
-    ingest.add_argument("--scope", required=True)
-    ingest_source = ingest.add_mutually_exclusive_group(required=True)
+    ingest.add_argument("--scope")
+    ingest_source = ingest.add_mutually_exclusive_group()
     ingest_source.add_argument("--text")
     ingest_source.add_argument("--file")
     ingest.add_argument("--source", default="")
@@ -52,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--max-items", type=int, default=24)
     ingest.add_argument("--importance", type=float)
     ingest.add_argument("--certainty", type=float)
+    ingest.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be created without writing to the database.",
+    )
+    ingest.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Prompt for scope/tags/text and preview before saving.",
+    )
     ingest.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
     search = subparsers.add_parser("search", help="Search the memory store.")
@@ -77,6 +93,34 @@ def build_parser() -> argparse.ArgumentParser:
     wake_up.add_argument("--budget-chars", type=int, default=800)
     wake_up.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
+    list_cmd = subparsers.add_parser("list", help="List recent memories with optional filters.")
+    list_cmd.add_argument("--scope")
+    list_cmd.add_argument("--kind", choices=VALID_KINDS)
+    list_cmd.add_argument("--tags", nargs="*", default=[])
+    list_cmd.add_argument("--limit", type=int, default=20)
+    list_cmd.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    show = subparsers.add_parser("show", help="Show one memory by id.")
+    show.add_argument("--id", required=True, dest="memory_id")
+    show.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    update = subparsers.add_parser("update", help="Update fields of an existing memory.")
+    update.add_argument("--id", required=True, dest="memory_id")
+    update.add_argument("--scope")
+    update.add_argument("--kind", choices=VALID_KINDS)
+    update.add_argument("--title")
+    update.add_argument("--content")
+    update.add_argument("--summary")
+    update.add_argument("--tags", nargs="*", default=None)
+    update.add_argument("--source")
+    update.add_argument("--importance", type=float)
+    update.add_argument("--certainty", type=float)
+    update.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    delete = subparsers.add_parser("delete", help="Delete a memory by id.")
+    delete.add_argument("--id", required=True, dest="memory_id")
+    delete.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
     export = subparsers.add_parser("export", help="Export memories to json or jsonl.")
     export.add_argument("--scope")
     export.add_argument("--kind", choices=VALID_KINDS)
@@ -95,13 +139,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_command.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
+    verify = subparsers.add_parser(
+        "verify",
+        help="Check database integrity (stems, fingerprints, FTS sync).",
+    )
+    verify.add_argument(
+        "--repair",
+        action="store_true",
+        help="Recompute and fix any mismatches found.",
+    )
+    verify.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    completion = subparsers.add_parser(
+        "completion",
+        help="Print a shell completion script for memory-kernel.",
+    )
+    completion.add_argument("shell", choices=("bash", "powershell"))
+
     stats = subparsers.add_parser("stats", help="Show memory statistics.")
+    stats.add_argument(
+        "--since",
+        help="Include recent-activity counts (e.g., '7d' for last seven days, or '2026-04-01').",
+    )
     stats.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
     parser = build_parser()
     args = parser.parse_args(argv)
     store = MemoryStore(args.db)
@@ -140,7 +212,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "ingest":
-            store.init()
+            if args.interactive:
+                if args.text or args.file:
+                    print(
+                        "ingest: --interactive cannot be combined with --text or --file",
+                        file=sys.stderr,
+                    )
+                    return 1
+                return _run_interactive_ingest(store, args)
+
+            if not args.scope:
+                print("ingest: --scope is required (or use --interactive)", file=sys.stderr)
+                return 1
+            if not args.text and not args.file:
+                print(
+                    "ingest: provide --text or --file (or use --interactive)",
+                    file=sys.stderr,
+                )
+                return 1
+
             if args.file:
                 input_path = Path(args.file)
                 text = input_path.read_text(encoding="utf-8-sig")
@@ -149,6 +239,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 text = args.text
                 source = args.source
 
+            if args.dry_run:
+                report = store.preview_ingest(
+                    text,
+                    scope=args.scope,
+                    source=source,
+                    tags=args.tags,
+                    max_items=args.max_items,
+                    kind=args.kind,
+                    importance=args.importance,
+                    certainty=args.certainty,
+                )
+                if args.json:
+                    print(json.dumps(report, ensure_ascii=False, indent=2))
+                else:
+                    _print_dry_run_report(report)
+                return 0
+
+            store.init()
             report = store.ingest_text(
                 text,
                 scope=args.scope,
@@ -206,6 +314,75 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(pack["rendered"])
             return 0
 
+        if args.command == "list":
+            records = store.list_memories(
+                scope=args.scope,
+                kind=args.kind,
+                tags=args.tags,
+                limit=args.limit,
+            )
+            if args.json:
+                print(json.dumps([r.to_dict() for r in records], ensure_ascii=False, indent=2))
+            else:
+                _print_list(records)
+            return 0
+
+        if args.command == "show":
+            record = store.get_memory(args.memory_id)
+            if record is None:
+                print(f"memory not found: {args.memory_id}", file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            else:
+                _print_record(record)
+            return 0
+
+        if args.command == "update":
+            update_kwargs = {
+                key: value
+                for key, value in {
+                    "scope": args.scope,
+                    "kind": args.kind,
+                    "title": args.title,
+                    "content": args.content,
+                    "summary": args.summary,
+                    "tags": args.tags,
+                    "source": args.source,
+                    "importance": args.importance,
+                    "certainty": args.certainty,
+                }.items()
+                if value is not None
+            }
+            if not update_kwargs:
+                print("update: at least one field must be provided", file=sys.stderr)
+                return 1
+            try:
+                record = store.update_memory(args.memory_id, **update_kwargs)
+            except KeyError as exc:
+                print(str(exc).strip("'"), file=sys.stderr)
+                return 1
+            except ValueError as exc:
+                print(f"update: {exc}", file=sys.stderr)
+                return 1
+            if args.json:
+                print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+            else:
+                print(f"updated {record.id} [{record.kind}/{record.scope}] {record.title}")
+            return 0
+
+        if args.command == "delete":
+            deleted = store.delete_memory(args.memory_id)
+            if not deleted:
+                print(f"memory not found: {args.memory_id}", file=sys.stderr)
+                return 1
+            payload = {"id": args.memory_id, "action": "deleted"}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(f"deleted {args.memory_id}")
+            return 0
+
         if args.command == "export":
             memories = store.export_memories(
                 scope=args.scope,
@@ -241,8 +418,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _print_import_report(report, input_path)
             return 0
 
+        if args.command == "completion":
+            if args.shell == "bash":
+                print(_build_bash_completion(parser))
+            else:
+                print(_build_powershell_completion(parser))
+            return 0
+
+        if args.command == "verify":
+            report = store.verify(repair=args.repair)
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                _print_verify(report)
+            return 0 if report["healthy"] else 1
+
         if args.command == "stats":
-            payload = store.stats()
+            since = None
+            if args.since:
+                try:
+                    since = _parse_since(args.since)
+                except ValueError as exc:
+                    print(f"stats: {exc}", file=sys.stderr)
+                    return 1
+            payload = store.stats(since=since)
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
@@ -257,6 +456,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print("top scopes:")
                 for scope, count in payload["top_scopes"].items():
                     print(f"  - {scope}: {count}")
+                if "since" in payload:
+                    print()
+                    print(f"since: {payload['since']}")
+                    print(f"  created: {payload['created_since']}")
+                    print(f"  updated: {payload['updated_since']}")
+                    if payload["by_kind_since"]:
+                        print("  by kind:")
+                        for kind, count in payload["by_kind_since"].items():
+                            print(f"    - {kind}: {count}")
             return 0
 
         parser.error("unknown command")
@@ -271,13 +479,316 @@ def _print_results(results: Sequence) -> None:
         return
 
     for index, item in enumerate(results, start=1):
-        print(f"[{index}] [{item.kind}/{item.scope}] {item.title}")
+        print(f"[{index}] {item.id} [{item.kind}/{item.scope}] {item.title}")
         print(f"    score={item.score} importance={item.importance} certainty={item.certainty}")
         if item.tags:
             print(f"    tags={', '.join(item.tags)}")
         if item.source:
             print(f"    source={item.source}")
         print(f"    {item.excerpt}")
+
+
+def _collect_subcommand_metadata(parser: argparse.ArgumentParser) -> dict[str, dict]:
+    metadata: dict[str, dict] = {}
+    subparsers_action = next(
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)),
+        None,
+    )
+    if subparsers_action is None:
+        return metadata
+    for name, sub in subparsers_action.choices.items():
+        flags: list[str] = []
+        choices_for_flag: dict[str, list[str]] = {}
+        for action in sub._actions:
+            for opt in action.option_strings:
+                if opt.startswith("--") and opt not in flags:
+                    flags.append(opt)
+                    if action.choices is not None:
+                        choices_for_flag[opt] = [str(c) for c in action.choices]
+        metadata[name] = {"flags": sorted(flags), "choices": choices_for_flag}
+    return metadata
+
+
+def _build_bash_completion(parser: argparse.ArgumentParser) -> str:
+    metadata = _collect_subcommand_metadata(parser)
+    subcommands = " ".join(metadata.keys())
+
+    branches: list[str] = []
+    for name, info in metadata.items():
+        flags_line = " ".join(info["flags"])
+        choice_cases = []
+        for flag, values in sorted(info["choices"].items()):
+            values_line = " ".join(values)
+            choice_cases.append(
+                f'                {flag})\n'
+                f'                    COMPREPLY=( $(compgen -W "{values_line}" -- "${{cur}}") )\n'
+                f'                    return 0\n'
+                f'                    ;;'
+            )
+        choice_block = "\n".join(choice_cases)
+        choice_section = (
+            f"            case \"${{prev}}\" in\n{choice_block}\n            esac\n"
+            if choice_block
+            else ""
+        )
+        branches.append(
+            f"        {name})\n"
+            f"{choice_section}"
+            f"            if [[ \"${{cur}}\" == --* ]]; then\n"
+            f"                COMPREPLY=( $(compgen -W \"{flags_line}\" -- \"${{cur}}\") )\n"
+            f"            fi\n"
+            f"            ;;"
+        )
+
+    case_block = "\n".join(branches)
+    return (
+        "# bash completion for memory-kernel — generated by `memory-kernel completion bash`\n"
+        "_memory_kernel_complete() {\n"
+        "    local cur prev cmd\n"
+        "    COMPREPLY=()\n"
+        "    cur=\"${COMP_WORDS[COMP_CWORD]}\"\n"
+        "    prev=\"${COMP_WORDS[COMP_CWORD-1]}\"\n"
+        "\n"
+        "    if [[ ${COMP_CWORD} -eq 1 ]]; then\n"
+        f"        COMPREPLY=( $(compgen -W \"{subcommands}\" -- \"${{cur}}\") )\n"
+        "        return 0\n"
+        "    fi\n"
+        "\n"
+        "    cmd=\"${COMP_WORDS[1]}\"\n"
+        "    case \"${cmd}\" in\n"
+        f"{case_block}\n"
+        "    esac\n"
+        "}\n"
+        "complete -F _memory_kernel_complete memory-kernel\n"
+    )
+
+
+def _build_powershell_completion(parser: argparse.ArgumentParser) -> str:
+    metadata = _collect_subcommand_metadata(parser)
+    subcommand_array = ", ".join(f"'{name}'" for name in metadata.keys())
+
+    branches: list[str] = []
+    for name, info in metadata.items():
+        flags_array = ", ".join(f"'{flag}'" for flag in info["flags"])
+        choice_cases = []
+        for flag, values in sorted(info["choices"].items()):
+            values_array = ", ".join(f"'{v}'" for v in values)
+            choice_cases.append(
+                f"            '{flag}' {{\n"
+                f"                @({values_array}) | Where-Object {{ $_ -like \"$wordToComplete*\" }} |\n"
+                f"                    ForEach-Object {{ [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }}\n"
+                f"                return\n"
+                f"            }}"
+            )
+        choice_block = "\n".join(choice_cases)
+        choice_section = (
+            f"        switch ($previous) {{\n{choice_block}\n        }}\n"
+            if choice_block
+            else ""
+        )
+        branches.append(
+            f"    '{name}' {{\n"
+            f"{choice_section}"
+            f"        @({flags_array}) | Where-Object {{ $_ -like \"$wordToComplete*\" }} |\n"
+            f"            ForEach-Object {{ [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterName', $_) }}\n"
+            f"        return\n"
+            f"    }}"
+        )
+
+    case_block = "\n".join(branches)
+    return (
+        "# PowerShell completion for memory-kernel — generated by `memory-kernel completion powershell`\n"
+        "Register-ArgumentCompleter -Native -CommandName memory-kernel -ScriptBlock {\n"
+        "    param($wordToComplete, $commandAst, $cursorPosition)\n"
+        "\n"
+        "    $tokens = @($commandAst.CommandElements | ForEach-Object { $_.ToString() })\n"
+        "    $previous = if ($tokens.Count -ge 2) { $tokens[-2] } else { '' }\n"
+        "\n"
+        "    if ($tokens.Count -le 2) {\n"
+        f"        @({subcommand_array}) | Where-Object {{ $_ -like \"$wordToComplete*\" }} |\n"
+        "            ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }\n"
+        "        return\n"
+        "    }\n"
+        "\n"
+        "    $cmd = $tokens[1]\n"
+        "    switch ($cmd) {\n"
+        f"{case_block}\n"
+        "    }\n"
+        "}\n"
+    )
+
+
+def _prompt(label: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    raw = input(f"{label}{suffix}: ").strip()
+    return raw if raw else default
+
+
+def _prompt_yes_no(question: str) -> bool:
+    raw = input(f"{question} [y/N]: ").strip().lower()
+    return raw.startswith("y")
+
+
+def _read_multiline() -> str:
+    print(
+        "Paste your text below. Press Ctrl+D (Linux/macOS) or Ctrl+Z then Enter (Windows) to finish:",
+        file=sys.stderr,
+    )
+    lines: list[str] = []
+    while True:
+        try:
+            lines.append(input())
+        except EOFError:
+            break
+    return "\n".join(lines)
+
+
+def _run_interactive_ingest(store: MemoryStore, args: argparse.Namespace) -> int:
+    scope = _prompt("Scope", default=args.scope or "")
+    if not scope:
+        print("ingest: scope is required", file=sys.stderr)
+        return 1
+
+    source = _prompt("Source (optional)", default=args.source or "")
+    tags_raw = _prompt("Tags (space-separated, optional)", default=" ".join(args.tags or ()))
+    tags = tags_raw.split() if tags_raw else []
+
+    text = _read_multiline()
+    if not text.strip():
+        print("ingest: no text provided", file=sys.stderr)
+        return 1
+
+    preview = store.preview_ingest(
+        text,
+        scope=scope,
+        source=source,
+        tags=tags,
+        max_items=args.max_items,
+        kind=args.kind,
+        importance=args.importance,
+        certainty=args.certainty,
+    )
+    if preview["segments"] == 0:
+        print("ingest: no valid segments found in input", file=sys.stderr)
+        return 1
+
+    print()
+    _print_dry_run_report(preview)
+    print()
+
+    if not _prompt_yes_no(f"Save these {preview['segments']} memories?"):
+        print("ingest: cancelled")
+        return 0
+
+    report = store.ingest_text(
+        text,
+        scope=scope,
+        source=source,
+        tags=tags,
+        max_items=args.max_items,
+        kind=args.kind,
+        importance=args.importance,
+        certainty=args.certainty,
+    )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        _print_ingest_report(report)
+    return 0
+
+
+def _parse_since(value: str) -> datetime:
+    value = value.strip()
+    if not value:
+        raise ValueError("--since must not be empty")
+    relative = _SINCE_RELATIVE_RE.match(value)
+    if relative:
+        days = int(relative.group(1))
+        return datetime.now(timezone.utc) - timedelta(days=days)
+    try:
+        parsed = parse_timestamp(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"--since must be like '7d' or an ISO timestamp, got {value!r}"
+        ) from exc
+    if parsed is None:
+        raise ValueError(f"--since must be like '7d' or an ISO timestamp, got {value!r}")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _print_verify(report: dict) -> None:
+    print(f"checked: {report['checked_memories']} memories")
+    if report["healthy"]:
+        print("healthy: yes")
+        if report.get("repaired_stems") or report.get("repaired_fingerprints") or report.get("rebuilt_fts"):
+            print(
+                f"repaired: stems={report.get('repaired_stems', 0)} "
+                f"fingerprints={report.get('repaired_fingerprints', 0)} "
+                f"fts_rebuilt={report.get('rebuilt_fts', False)}"
+            )
+        return
+    print("healthy: no")
+    if report["schema_issue"]:
+        print(f"  schema: {report['schema_issue']}")
+    if report["stems_text_mismatches"]:
+        print(f"  stems_text mismatches: {len(report['stems_text_mismatches'])}")
+        for memory_id in report["stems_text_mismatches"][:5]:
+            print(f"    - {memory_id}")
+        if len(report["stems_text_mismatches"]) > 5:
+            print(f"    ... and {len(report['stems_text_mismatches']) - 5} more")
+    if report["fingerprint_mismatches"]:
+        print(f"  fingerprint mismatches: {len(report['fingerprint_mismatches'])}")
+        for memory_id in report["fingerprint_mismatches"][:5]:
+            print(f"    - {memory_id}")
+        if len(report["fingerprint_mismatches"]) > 5:
+            print(f"    ... and {len(report['fingerprint_mismatches']) - 5} more")
+    if report["fts_count_mismatch"]:
+        mismatch = report["fts_count_mismatch"]
+        print(f"  fts count mismatch: memories={mismatch['memories']} fts={mismatch['fts']}")
+    if "repaired_stems" in report:
+        print(
+            f"repaired: stems={report['repaired_stems']} "
+            f"fingerprints={report['repaired_fingerprints']} "
+            f"fts_rebuilt={report['rebuilt_fts']}"
+        )
+    print("hint: re-run with --repair to fix automatically")
+
+
+def _print_list(records: Sequence[MemoryRecord]) -> None:
+    if not records:
+        print("no memories found")
+        return
+    for record in records:
+        print(f"{record.id} [{record.kind}/{record.scope}] {record.title}")
+        print(
+            f"    updated_at={record.updated_at}"
+            f"  importance={record.importance}  certainty={record.certainty}"
+        )
+        if record.tags:
+            print(f"    tags={', '.join(record.tags)}")
+
+
+def _print_record(record: MemoryRecord) -> None:
+    print(f"id: {record.id}")
+    print(f"scope: {record.scope}")
+    print(f"kind: {record.kind}")
+    print(f"title: {record.title}")
+    print(f"summary: {record.summary}")
+    print(f"importance: {record.importance}  certainty: {record.certainty}")
+    if record.tags:
+        print(f"tags: {', '.join(record.tags)}")
+    if record.source:
+        print(f"source: {record.source}")
+    print(f"created_at: {record.created_at}")
+    print(f"updated_at: {record.updated_at}")
+    if record.last_accessed_at:
+        print(f"last_accessed_at: {record.last_accessed_at}")
+    print(f"access_count: {record.access_count}")
+    print()
+    print("content:")
+    print(record.content)
 
 
 def _print_ingest_report(report: dict) -> None:
@@ -287,6 +798,19 @@ def _print_ingest_report(report: dict) -> None:
     )
     for item in report["items"]:
         print(f"  - {item['action']}: [{item['kind']}/{report['scope']}] {item['title']}")
+
+
+def _print_dry_run_report(report: dict) -> None:
+    print(f"would ingest {report['segments']} segments into {report['scope']}")
+    for index, item in enumerate(report["items"], start=1):
+        print(f"  [{index}] [{item['kind']}] {item['title']}")
+        print(
+            f"        importance={item['importance']}  certainty={item['certainty']}"
+        )
+        if item["tags"]:
+            print(f"        tags={', '.join(item['tags'])}")
+        if item["summary"]:
+            print(f"        summary: {item['summary']}")
 
 
 def _render_export(

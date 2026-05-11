@@ -7,13 +7,14 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from .accelerator import (
     has_experimental_native_ranking,
     has_native_acceleration,
+    light_stem_enabled,
     native_accel,
 )
 
@@ -41,6 +42,7 @@ SPACE_RE = re.compile(r"\s+")
 BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*•]+|\d+[.)])\s*")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 NON_WORD_RE = re.compile(r"[^\w\s-]+", re.UNICODE)
+APOSTROPHE_TRANSLATE = str.maketrans("", "", "'’‘ʼ")
 STOP_WORDS = {
     "a",
     "an",
@@ -110,6 +112,24 @@ STOP_WORDS = {
 }
 MIN_INGEST_CHARS = 12
 NATIVE_RANKING_MIN_CANDIDATES = 24
+CURRENT_SCHEMA_VERSION = 3
+UKRAINIAN_SUFFIXES = (
+    "ування", "аються", "ається", "юються", "ується",
+    "ються", "ється",
+    "ення", "ання", "іння", "ивши", "авши", "уючи",
+    "ила", "или", "ило", "ати", "яти", "ити", "іти", "ути",
+    "ого", "ому", "ими", "ями",
+    "ена", "ане", "ені", "ані", "ене",
+    "ить", "ать", "ять", "ють", "уть", "ємо",
+    "ою", "ів", "ам", "ом", "ах", "их", "ує",
+)
+UKRAINIAN_PREFIXES = (
+    "пере",
+    "роз", "при", "над", "під", "про", "від",
+    "ви", "за", "на", "по", "до", "не", "об",
+)
+LIGHT_STEM_MIN_LEN = 3
+DEEP_STEM_MIN_LEN = 3
 BASE_IMPORTANCE = {
     "decision": 0.84,
     "constraint": 0.82,
@@ -146,7 +166,7 @@ KIND_HINTS = {
         "must",
         "must stay",
         "cannot",
-        "can't",
+        "cant",
         "never",
         "limit",
         "budget",
@@ -308,10 +328,6 @@ class ImportedMemoryRecord:
     last_accessed_at: str | None
 
 
-def can_use_native_text(*values: str) -> bool:
-    return native_accel is not None and all(value.isascii() for value in values)
-
-
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -350,12 +366,13 @@ def derive_summary(text: str, max_chars: int = 180) -> str:
 
 def canonicalize_text(value: str) -> str:
     lowered = normalize_space(value).lower()
+    lowered = lowered.translate(APOSTROPHE_TRANSLATE)
     lowered = NON_WORD_RE.sub(" ", lowered)
     return normalize_space(lowered)
 
 
 def semantic_terms(text: str, *, limit: int | None = None) -> list[str]:
-    if can_use_native_text(text):
+    if native_accel is not None:
         native_limit = -1 if limit is None else limit
         return list(native_accel.semantic_terms(text, native_limit))
     seen: list[str] = []
@@ -372,7 +389,7 @@ def semantic_terms(text: str, *, limit: int | None = None) -> list[str]:
 
 
 def token_overlap_score(left: str, right: str) -> float:
-    if can_use_native_text(left, right):
+    if native_accel is not None:
         return float(native_accel.token_overlap_score(left, right))
     left_terms = set(semantic_terms(left))
     right_terms = set(semantic_terms(right))
@@ -439,7 +456,7 @@ def compute_fingerprint(scope: str, kind: str, title: str, content: str) -> str:
 
 
 def derive_title(text: str, kind: str, max_words: int = 10, max_chars: int = 72) -> str:
-    if can_use_native_text(text, kind):
+    if native_accel is not None:
         return native_accel.derive_title(text, kind, max_words, max_chars)
     candidate = normalize_space(text)
     for pattern in TITLE_PREFIX_PATTERNS.get(kind, ()):
@@ -454,7 +471,7 @@ def derive_title(text: str, kind: str, max_words: int = 10, max_chars: int = 72)
 
 
 def infer_kind(text: str) -> str:
-    if can_use_native_text(text):
+    if native_accel is not None:
         return native_accel.infer_kind(text)
     lowered = canonicalize_text(text)
     scores = {kind: 0 for kind in VALID_KINDS}
@@ -480,7 +497,7 @@ def infer_kind(text: str) -> str:
 
 
 def infer_importance(text: str, kind: str) -> float:
-    if can_use_native_text(text, kind):
+    if native_accel is not None:
         return float(native_accel.infer_importance(text, kind))
     score = BASE_IMPORTANCE.get(kind, 0.5)
     lowered = canonicalize_text(text)
@@ -496,7 +513,7 @@ def infer_importance(text: str, kind: str) -> float:
 
 
 def infer_certainty(text: str, kind: str) -> float:
-    if can_use_native_text(text, kind):
+    if native_accel is not None:
         return float(native_accel.infer_certainty(text, kind))
     score = BASE_CERTAINTY.get(kind, 0.7)
     lowered = canonicalize_text(text)
@@ -510,7 +527,7 @@ def infer_certainty(text: str, kind: str) -> float:
 
 
 def derive_candidate_tags(text: str, *, base_tags: Sequence[str] = (), limit: int = 6) -> tuple[str, ...]:
-    if can_use_native_text(text, *base_tags):
+    if native_accel is not None:
         return tuple(native_accel.derive_candidate_tags(text, list(base_tags), limit))
     tags = list(normalize_tags(base_tags))
     for term in semantic_terms(text, limit=10):
@@ -590,7 +607,7 @@ def split_memory_candidates(text: str, *, max_items: int = 24, max_chars: int = 
 
 
 def extract_terms(query: str) -> list[str]:
-    if can_use_native_text(query):
+    if native_accel is not None:
         return list(native_accel.extract_terms(query))
     seen: list[str] = []
     for token in TOKEN_RE.findall(query.lower()):
@@ -605,11 +622,75 @@ def extract_terms(query: str) -> list[str]:
     return seen
 
 
+def light_stem(term: str, *, min_stem_len: int = LIGHT_STEM_MIN_LEN) -> str:
+    if native_accel is not None and min_stem_len == LIGHT_STEM_MIN_LEN:
+        return native_accel.light_stem(term)
+    if len(term) <= min_stem_len:
+        return term
+    for suffix in UKRAINIAN_SUFFIXES:
+        if term.endswith(suffix) and len(term) - len(suffix) >= min_stem_len:
+            return term[: -len(suffix)]
+    return term
+
+
+def strip_ukrainian_prefix(
+    term: str,
+    *,
+    min_stem_len: int = DEEP_STEM_MIN_LEN,
+    max_iterations: int = 2,
+) -> str:
+    current = term
+    for _ in range(max_iterations):
+        if len(current) <= min_stem_len:
+            break
+        stripped = None
+        for prefix in UKRAINIAN_PREFIXES:
+            if current.startswith(prefix) and len(current) - len(prefix) >= min_stem_len:
+                stripped = current[len(prefix):]
+                break
+        if stripped is None or stripped == current:
+            break
+        current = stripped
+    return current
+
+
+def deep_stem(term: str) -> str:
+    if native_accel is not None:
+        return native_accel.deep_stem(term)
+    return strip_ukrainian_prefix(light_stem(term))
+
+
+def compute_stems_text(title: str, content: str, tags: Sequence[str]) -> str:
+    if native_accel is not None:
+        return native_accel.compute_stems_text(title, content, list(tags))
+    parts = [title, content]
+    if tags:
+        parts.append(" ".join(tags))
+    combined = " ".join(parts)
+    seen: set[str] = set()
+    stems: list[str] = []
+    for term in semantic_terms(combined):
+        stem = deep_stem(term)
+        if stem and stem not in seen:
+            seen.add(stem)
+            stems.append(stem)
+    return " ".join(stems)
+
+
 def build_fts_query(query: str) -> str:
-    if can_use_native_text(query):
-        return native_accel.build_fts_query(query)
     terms = extract_terms(query)
-    return " OR ".join(f"{term}*" for term in terms)
+    if not light_stem_enabled():
+        return " OR ".join(f"{term}*" for term in terms)
+    parts: list[str] = []
+    seen_stems: set[str] = set()
+    for term in terms:
+        light = light_stem(term)
+        parts.append(f"{light}*")
+        deep = deep_stem(term)
+        if deep and deep != light and deep not in seen_stems:
+            seen_stems.add(deep)
+            parts.append(f"stems_text:{deep}")
+    return " OR ".join(parts)
 
 
 def make_excerpt(summary: str, content: str, terms: Sequence[str], max_chars: int = 220) -> str:
@@ -646,12 +727,96 @@ class MemoryStore:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(self._schema_sql())
-            self._migrate_schema(connection)
             connection.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2')"
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            existing_version = self._get_schema_version(connection)
+            if existing_version == 0 and self._memories_table_exists(connection):
+                existing_version = 1
+            if existing_version == 0:
+                self._create_fresh_schema(connection)
+            elif existing_version < CURRENT_SCHEMA_VERSION:
+                self._apply_migrations(connection, existing_version)
         self._initialized = True
+
+    def _memories_table_exists(self, connection: sqlite3.Connection) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
+        ).fetchone()
+        return row is not None
+
+    def _create_fresh_schema(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(self._memories_schema_sql())
+        connection.executescript(self._fts_schema_sql())
+        self._set_schema_version(connection, CURRENT_SCHEMA_VERSION)
+
+    def _apply_migrations(
+        self, connection: sqlite3.Connection, current_version: int
+    ) -> None:
+        steps: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
+            (2, self._migrate_v1_to_v2),
+            (3, self._migrate_v2_to_v3),
+        ]
+        for target_version, migrate in steps:
+            if current_version < target_version:
+                migrate(connection)
+                self._set_schema_version(connection, target_version)
+                current_version = target_version
+
+    def _set_schema_version(self, connection: sqlite3.Connection, version: int) -> None:
+        connection.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+            (str(version),),
+        )
+
+    def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
+        columns = self._table_columns(connection, "memories")
+        if "fingerprint" not in columns:
+            connection.execute(
+                "ALTER TABLE memories ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(fingerprint)"
+        )
+        missing = connection.execute(
+            """
+            SELECT rowid, scope, kind, title, content
+            FROM memories
+            WHERE fingerprint = '' OR fingerprint IS NULL
+            """
+        ).fetchall()
+        if not missing:
+            return
+        connection.executemany(
+            "UPDATE memories SET fingerprint = ? WHERE rowid = ?",
+            [
+                (
+                    compute_fingerprint(
+                        row["scope"], row["kind"], row["title"], row["content"]
+                    ),
+                    row["rowid"],
+                )
+                for row in missing
+            ],
+        )
+
+    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
+        connection.executescript(
+            """
+            DROP TRIGGER IF EXISTS memories_ai;
+            DROP TRIGGER IF EXISTS memories_ad;
+            DROP TRIGGER IF EXISTS memories_au;
+            DROP TABLE IF EXISTS memory_fts;
+            """
+        )
+        columns = self._table_columns(connection, "memories")
+        if "stems_text" not in columns:
+            connection.execute(
+                "ALTER TABLE memories ADD COLUMN stems_text TEXT NOT NULL DEFAULT ''"
+            )
+        self._backfill_stems_text(connection)
+        connection.executescript(self._fts_schema_sql())
+        connection.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')")
 
     def remember(self, payload: MemoryInput) -> str:
         return self.remember_result(payload).id
@@ -703,6 +868,49 @@ class MemoryStore:
             "stored": len(items),
             "created": created,
             "updated": len(items) - created,
+            "items": items,
+        }
+
+    def preview_ingest(
+        self,
+        text: str,
+        *,
+        scope: str,
+        source: str = "",
+        tags: Sequence[str] = (),
+        max_items: int = 24,
+        kind: str | None = None,
+        importance: float | None = None,
+        certainty: float | None = None,
+    ) -> dict[str, Any]:
+        segments = split_memory_candidates(text, max_items=max_items)
+        items: list[dict[str, Any]] = []
+        for segment in segments:
+            item_kind = kind or infer_kind(segment)
+            derived_title = derive_title(segment, item_kind)
+            derived_summary = derive_summary(segment)
+            derived_tags = derive_candidate_tags(segment, base_tags=tags)
+            derived_importance = (
+                importance if importance is not None else infer_importance(segment, item_kind)
+            )
+            derived_certainty = (
+                certainty if certainty is not None else infer_certainty(segment, item_kind)
+            )
+            items.append(
+                {
+                    "kind": item_kind,
+                    "title": derived_title,
+                    "summary": derived_summary,
+                    "content": segment,
+                    "tags": list(derived_tags),
+                    "importance": derived_importance,
+                    "certainty": derived_certainty,
+                }
+            )
+        return {
+            "scope": scope,
+            "source": source,
+            "segments": len(segments),
             "items": items,
         }
 
@@ -791,7 +999,115 @@ class MemoryStore:
             header="Wake-up pack",
         )
 
-    def stats(self) -> dict[str, Any]:
+    def verify(self, *, repair: bool = False) -> dict[str, Any]:
+        self.init()
+        with self._connect() as connection:
+            initial = self._collect_verification(connection)
+            repaired_stems = 0
+            repaired_fingerprints = 0
+            rebuilt_fts = False
+            if repair and not initial["healthy"]:
+                rows = connection.execute(
+                    "SELECT rowid, id, scope, kind, title, content, tags_json FROM memories"
+                ).fetchall()
+                stems_updates: list[tuple[str, int]] = []
+                fingerprint_updates: list[tuple[str, int]] = []
+                bad_stems = set(initial["stems_text_mismatches"])
+                bad_fps = set(initial["fingerprint_mismatches"])
+                for row in rows:
+                    if row["id"] in bad_stems:
+                        tags = tuple(json.loads(row["tags_json"] or "[]"))
+                        stems_updates.append(
+                            (
+                                compute_stems_text(row["title"], row["content"], tags),
+                                row["rowid"],
+                            )
+                        )
+                    if row["id"] in bad_fps:
+                        fingerprint_updates.append(
+                            (
+                                compute_fingerprint(
+                                    row["scope"], row["kind"], row["title"], row["content"]
+                                ),
+                                row["rowid"],
+                            )
+                        )
+                if stems_updates:
+                    connection.executemany(
+                        "UPDATE memories SET stems_text = ? WHERE rowid = ?",
+                        stems_updates,
+                    )
+                    repaired_stems = len(stems_updates)
+                if fingerprint_updates:
+                    connection.executemany(
+                        "UPDATE memories SET fingerprint = ? WHERE rowid = ?",
+                        fingerprint_updates,
+                    )
+                    repaired_fingerprints = len(fingerprint_updates)
+                if initial["fts_count_mismatch"] is not None:
+                    connection.execute(
+                        "INSERT INTO memory_fts(memory_fts) VALUES('rebuild')"
+                    )
+                    rebuilt_fts = True
+                report = self._collect_verification(connection)
+            else:
+                report = initial
+
+        if repair:
+            report["repaired_stems"] = repaired_stems
+            report["repaired_fingerprints"] = repaired_fingerprints
+            report["rebuilt_fts"] = rebuilt_fts
+        return report
+
+    def _collect_verification(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        version = self._get_schema_version(connection)
+        schema_issue = None if version == 3 else f"expected schema_version 3, got {version}"
+
+        rows = connection.execute(
+            """
+            SELECT rowid, id, scope, kind, title, content,
+                   tags_json, stems_text, fingerprint
+            FROM memories
+            """
+        ).fetchall()
+
+        stems_mismatches: list[str] = []
+        fingerprint_mismatches: list[str] = []
+        for row in rows:
+            tags = tuple(json.loads(row["tags_json"] or "[]"))
+            expected_stems = compute_stems_text(row["title"], row["content"], tags)
+            if expected_stems != row["stems_text"]:
+                stems_mismatches.append(row["id"])
+            expected_fp = compute_fingerprint(
+                row["scope"], row["kind"], row["title"], row["content"]
+            )
+            if expected_fp != row["fingerprint"]:
+                fingerprint_mismatches.append(row["id"])
+
+        memories_count = len(rows)
+        fts_count = connection.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]
+        fts_mismatch = (
+            {"memories": memories_count, "fts": fts_count}
+            if memories_count != fts_count
+            else None
+        )
+
+        healthy = (
+            schema_issue is None
+            and not stems_mismatches
+            and not fingerprint_mismatches
+            and fts_mismatch is None
+        )
+        return {
+            "checked_memories": memories_count,
+            "schema_issue": schema_issue,
+            "stems_text_mismatches": stems_mismatches,
+            "fingerprint_mismatches": fingerprint_mismatches,
+            "fts_count_mismatch": fts_mismatch,
+            "healthy": healthy,
+        }
+
+    def stats(self, *, since: datetime | None = None) -> dict[str, Any]:
         self.init()
         with self._connect() as connection:
             total = connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
@@ -807,15 +1123,161 @@ class MemoryStore:
                     "SELECT scope, COUNT(*) AS count FROM memories GROUP BY scope ORDER BY count DESC LIMIT 10"
                 ).fetchall()
             }
-        return {
-            "database": str(self.db_path),
-            "accelerator": "rust" if has_native_acceleration() else "python",
-            "ranking_engine": self._ranking_engine_label(),
-            "upsert_engine": self._upsert_engine_label(),
-            "total_memories": total,
-            "by_kind": by_kind,
-            "top_scopes": by_scope,
-        }
+            payload: dict[str, Any] = {
+                "database": str(self.db_path),
+                "accelerator": "rust" if has_native_acceleration() else "python",
+                "ranking_engine": self._ranking_engine_label(),
+                "upsert_engine": self._upsert_engine_label(),
+                "total_memories": total,
+                "by_kind": by_kind,
+                "top_scopes": by_scope,
+            }
+            if since is not None:
+                cutoff = since.isoformat()
+                payload["since"] = cutoff
+                payload["created_since"] = connection.execute(
+                    "SELECT COUNT(*) FROM memories WHERE created_at >= ?",
+                    (cutoff,),
+                ).fetchone()[0]
+                payload["updated_since"] = connection.execute(
+                    "SELECT COUNT(*) FROM memories WHERE updated_at >= ?",
+                    (cutoff,),
+                ).fetchone()[0]
+                payload["by_kind_since"] = {
+                    row["kind"]: row["count"]
+                    for row in connection.execute(
+                        """
+                        SELECT kind, COUNT(*) AS count
+                        FROM memories
+                        WHERE updated_at >= ?
+                        GROUP BY kind
+                        ORDER BY count DESC
+                        """,
+                        (cutoff,),
+                    ).fetchall()
+                }
+        return payload
+
+    def get_memory(self, memory_id: str) -> MemoryRecord | None:
+        self.init()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row, score=0.0, excerpt="")
+
+    def delete_memory(self, memory_id: str) -> bool:
+        self.init()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM memories WHERE id = ?",
+                (memory_id,),
+            )
+        return cursor.rowcount > 0
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        scope: str | None = None,
+        kind: str | None = None,
+        title: str | None = None,
+        content: str | None = None,
+        summary: str | None = None,
+        tags: Sequence[str] | None = None,
+        source: str | None = None,
+        importance: float | None = None,
+        certainty: float | None = None,
+    ) -> MemoryRecord:
+        self.init()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+            if existing is None:
+                raise KeyError(f"memory not found: {memory_id}")
+
+            merged = MemoryInput(
+                scope=scope if scope is not None else existing["scope"],
+                kind=kind if kind is not None else existing["kind"],
+                title=title if title is not None else existing["title"],
+                content=content if content is not None else existing["content"],
+                summary=summary if summary is not None else existing["summary"],
+                tags=tuple(tags) if tags is not None else tuple(json.loads(existing["tags_json"])),
+                source=source if source is not None else existing["source"],
+                importance=importance if importance is not None else float(existing["importance"]),
+                certainty=certainty if certainty is not None else float(existing["certainty"]),
+            )
+            validated = self._validate_input(merged)
+            new_fingerprint = compute_fingerprint(
+                validated.scope, validated.kind, validated.title, validated.content
+            )
+            new_stems_text = compute_stems_text(
+                validated.title, validated.content, validated.tags
+            )
+            now = utc_now_iso()
+            connection.execute(
+                """
+                UPDATE memories
+                SET scope = ?, kind = ?, title = ?, summary = ?, content = ?,
+                    tags_json = ?, tags_text = ?, stems_text = ?, source = ?,
+                    importance = ?, certainty = ?,
+                    fingerprint = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    validated.scope,
+                    validated.kind,
+                    validated.title,
+                    validated.summary,
+                    validated.content,
+                    json.dumps(validated.tags, ensure_ascii=False),
+                    " ".join(validated.tags),
+                    new_stems_text,
+                    validated.source,
+                    validated.importance,
+                    validated.certainty,
+                    new_fingerprint,
+                    now,
+                    memory_id,
+                ),
+            )
+            updated_row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return self._row_to_record(updated_row, score=0.0, excerpt="")
+
+    def list_memories(
+        self,
+        *,
+        scope: str | None = None,
+        kind: str | None = None,
+        tags: Sequence[str] = (),
+        limit: int = 20,
+    ) -> list[MemoryRecord]:
+        self.init()
+        normalized_tags = normalize_tags(tags)
+        with self._connect() as connection:
+            filter_sql, params = self._build_filters(
+                scope=scope, kind=kind, tags=normalized_tags
+            )
+            rows = connection.execute(
+                f"""
+                SELECT m.*
+                FROM memories AS m
+                WHERE 1 = 1
+                {filter_sql}
+                ORDER BY m.updated_at DESC, m.created_at DESC, m.rowid DESC
+                LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [self._row_to_record(row, score=0.0, excerpt="") for row in rows]
 
     def export_memories(
         self,
@@ -915,7 +1377,7 @@ class MemoryStore:
         self._connection = connection
         return connection
 
-    def _schema_sql(self) -> str:
+    def _memories_schema_sql(self) -> str:
         return """
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -932,6 +1394,7 @@ class MemoryStore:
                 content TEXT NOT NULL,
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 tags_text TEXT NOT NULL DEFAULT '',
+                stems_text TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT '',
                 importance REAL NOT NULL DEFAULT 0.5,
                 certainty REAL NOT NULL DEFAULT 0.7,
@@ -948,32 +1411,36 @@ class MemoryStore:
                 ON memories(importance DESC, certainty DESC, access_count DESC, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_fingerprint
                 ON memories(fingerprint);
+        """
 
+    def _fts_schema_sql(self) -> str:
+        return """
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 title,
                 summary,
                 content,
                 tags_text,
+                stems_text,
                 content='memories',
                 content_rowid='rowid',
                 tokenize='unicode61 remove_diacritics 2'
             );
 
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memory_fts(rowid, title, summary, content, tags_text)
-                VALUES (new.rowid, new.title, new.summary, new.content, new.tags_text);
+                INSERT INTO memory_fts(rowid, title, summary, content, tags_text, stems_text)
+                VALUES (new.rowid, new.title, new.summary, new.content, new.tags_text, new.stems_text);
             END;
 
             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memory_fts(memory_fts, rowid, title, summary, content, tags_text)
-                VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags_text);
+                INSERT INTO memory_fts(memory_fts, rowid, title, summary, content, tags_text, stems_text)
+                VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags_text, old.stems_text);
             END;
 
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-                INSERT INTO memory_fts(memory_fts, rowid, title, summary, content, tags_text)
-                VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags_text);
-                INSERT INTO memory_fts(rowid, title, summary, content, tags_text)
-                VALUES (new.rowid, new.title, new.summary, new.content, new.tags_text);
+                INSERT INTO memory_fts(memory_fts, rowid, title, summary, content, tags_text, stems_text)
+                VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags_text, old.stems_text);
+                INSERT INTO memory_fts(rowid, title, summary, content, tags_text, stems_text)
+                VALUES (new.rowid, new.title, new.summary, new.content, new.tags_text, new.stems_text);
             END;
         """
 
@@ -1389,14 +1856,15 @@ class MemoryStore:
         ).fetchone()
         action = "updated" if existing is not None else "created"
         fingerprint = compute_fingerprint(record.scope, record.kind, record.title, record.content)
+        stems_text = compute_stems_text(record.title, record.content, record.tags)
         connection.execute(
             """
             INSERT INTO memories (
                 id, scope, kind, title, summary, content,
-                tags_json, tags_text, source, importance, certainty,
+                tags_json, tags_text, stems_text, source, importance, certainty,
                 fingerprint, access_count, created_at, updated_at, last_accessed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 scope = excluded.scope,
                 kind = excluded.kind,
@@ -1405,6 +1873,7 @@ class MemoryStore:
                 content = excluded.content,
                 tags_json = excluded.tags_json,
                 tags_text = excluded.tags_text,
+                stems_text = excluded.stems_text,
                 source = excluded.source,
                 importance = excluded.importance,
                 certainty = excluded.certainty,
@@ -1423,6 +1892,7 @@ class MemoryStore:
                 record.content,
                 json.dumps(record.tags, ensure_ascii=False),
                 " ".join(record.tags),
+                stems_text,
                 record.source,
                 record.importance,
                 record.certainty,
@@ -1462,13 +1932,14 @@ class MemoryStore:
 
         tags_json = json.dumps(record.tags, ensure_ascii=False)
         tags_text = " ".join(record.tags)
+        stems_text = compute_stems_text(record.title, record.content, record.tags)
         connection.execute(
             """
             INSERT INTO memories (
                 id, scope, kind, title, summary, content,
-                tags_json, tags_text, source, importance, certainty,
+                tags_json, tags_text, stems_text, source, importance, certainty,
                 fingerprint, created_at, updated_at, last_accessed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 memory_id,
@@ -1479,6 +1950,7 @@ class MemoryStore:
                 record.content,
                 tags_json,
                 tags_text,
+                stems_text,
                 record.source,
                 record.importance,
                 record.certainty,
@@ -1585,6 +2057,7 @@ class MemoryStore:
             merged_content,
         )
 
+        merged_stems_text = compute_stems_text(merged_title, merged_content, merged_tags)
         connection.execute(
             """
             UPDATE memories
@@ -1593,6 +2066,7 @@ class MemoryStore:
                 content = ?,
                 tags_json = ?,
                 tags_text = ?,
+                stems_text = ?,
                 source = ?,
                 importance = ?,
                 certainty = ?,
@@ -1606,6 +2080,7 @@ class MemoryStore:
                 merged_content,
                 json.dumps(merged_tags, ensure_ascii=False),
                 " ".join(merged_tags),
+                merged_stems_text,
                 merged_source,
                 merged_importance,
                 merged_certainty,
@@ -1629,39 +2104,32 @@ class MemoryStore:
             for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
 
-    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
-        columns = self._table_columns(connection, "memories")
-        if "fingerprint" not in columns:
-            connection.execute(
-                "ALTER TABLE memories ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''"
-            )
+    def _get_schema_version(self, connection: sqlite3.Connection) -> int:
+        try:
+            row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        if row is None:
+            return 0
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            return 0
 
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories(fingerprint)"
-        )
-
-        missing = connection.execute(
-            """
-            SELECT rowid, scope, kind, title, content
-            FROM memories
-            WHERE fingerprint = '' OR fingerprint IS NULL
-            """
+    def _backfill_stems_text(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            "SELECT rowid, title, content, tags_json FROM memories"
         ).fetchall()
-        if not missing:
+        if not rows:
             return
-
+        updates = []
+        for row in rows:
+            tags = tuple(json.loads(row["tags_json"] or "[]"))
+            stems = compute_stems_text(row["title"], row["content"], tags)
+            updates.append((stems, row["rowid"]))
         connection.executemany(
-            "UPDATE memories SET fingerprint = ? WHERE rowid = ?",
-            [
-                (
-                    compute_fingerprint(
-                        row["scope"],
-                        row["kind"],
-                        row["title"],
-                        row["content"],
-                    ),
-                    row["rowid"],
-                )
-                for row in missing
-            ],
+            "UPDATE memories SET stems_text = ? WHERE rowid = ?",
+            updates,
         )
