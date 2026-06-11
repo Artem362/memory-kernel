@@ -24,8 +24,10 @@ Release notes:
   - Write: [`remember`](#remember), [`ingest`](#ingest)
   - Read: [`search`](#search), [`context`](#context), [`wake-up`](#wake-up), [`stats`](#stats)
   - Inspect / edit: [`list`](#list), [`show`](#show), [`update`](#update), [`delete`](#delete)
+  - Lifecycle: [`forget` / `restore`](#forget--restore), [`revise`](#revise), [`decay`](#decay)
   - Maintain: [`completion`](#completion), [`verify`](#verify)
   - Backup: [`export`](#export), [`import`](#import)
+- [Use With An LLM (MCP)](#use-with-an-llm-mcp)
 - [How It Works](#how-it-works)
   - [Data Flow](#data-flow)
   - [Component Diagram](#component-diagram)
@@ -209,6 +211,40 @@ memory-kernel delete --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
 
 The command exits non-zero if the id does not exist, so wrap it in shell logic if you script around it.
 
+### `forget` / `restore`
+
+`delete` removes a memory permanently. When you only want it out of recall but kept for safety, use `forget` — a soft-archive. Archived memories disappear from `search`, `context`, `wake-up`, and `list`, but the data stays and `restore` brings it back.
+
+```powershell
+memory-kernel forget --id 9f1e...
+memory-kernel restore --id 9f1e...
+memory-kernel list --include-archived   # see archived/superseded memories
+```
+
+Re-saving the same memory with `remember`/`ingest` also resurrects it automatically.
+
+### `revise`
+
+When a new memory replaces an old one, record the relationship with `revise`: the old memory is marked superseded (hidden from recall, kept for history with a pointer to its replacement).
+
+```powershell
+memory-kernel revise --id <new-id> --supersedes <old-id>
+```
+
+This keeps memory self-curating: stale decisions fade out of recall as newer ones take their place, instead of piling up as contradictory noise.
+
+### `decay`
+
+`decay` applies a forgetting curve: it auto-archives memories that are old, rarely recalled, and low-value, so the store and your recall stay lean over time. Each memory has a retention score built from its importance, how often it has been recalled (reinforcement), and how long since it was last seen (time decay).
+
+```powershell
+memory-kernel decay --dry-run          # preview what would fade
+memory-kernel decay                    # apply (archives, recoverable)
+memory-kernel decay --min-age-days 60 --max-access 0 --scope project.alpha
+```
+
+Only `note` and `fact` memories are eligible — `decision`, `constraint`, `task`, and `preference` are never decayed. Archiving is the soft, recoverable kind, so `restore` and `list --include-archived` still reach faded memories. This is the heart of the project's thesis: spend the budget on what matters, let trivia fade.
+
 ### `completion`
 
 Use `completion` to print a shell completion script for `memory-kernel`. The script is generated dynamically from the current parser, so it stays in sync as commands are added.
@@ -253,6 +289,67 @@ memory-kernel import --file exports\project-alpha.jsonl
 ```
 
 `import` is idempotent for the same exported records because it upserts by memory `id`.
+
+## Use With An LLM (MCP)
+
+Memory Kernel ships an [MCP](https://modelcontextprotocol.io) server so an LLM can save and recall memories itself during a session. It works with Claude Desktop, Claude Code, Cursor, and any other MCP client, over stdio.
+
+Install with the MCP extra:
+
+```powershell
+pip install "amormorri-memory-kernel[mcp]"
+```
+
+Run it directly to check it starts:
+
+```powershell
+memory-kernel-mcp --db .memory-kernel\memory.db
+# or via the main CLI:
+memory-kernel serve-mcp --db-path .memory-kernel\memory.db
+```
+
+Then register it with your client. For **Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "memory-kernel": {
+      "command": "memory-kernel-mcp",
+      "env": { "MEMORY_KERNEL_DB": "C:\\Users\\you\\.memory-kernel\\memory.db" }
+    }
+  }
+}
+```
+
+For **Claude Code / Cursor** (`.mcp.json` in the project root):
+
+```json
+{
+  "mcpServers": {
+    "memory-kernel": {
+      "command": "memory-kernel-mcp",
+      "args": ["--db", "${workspaceFolder}/.memory-kernel/memory.db"]
+    }
+  }
+}
+```
+
+The server exposes seven tools:
+
+| Tool | Purpose | Read-only |
+|------|---------|-----------|
+| `memory_remember` | Save one precise memory | no (dedup-merge, non-destructive) |
+| `memory_ingest` | Split raw text into structured memories | no |
+| `memory_forget` | Soft-archive a memory (recoverable) | no (reversible) |
+| `memory_search` | Find relevant memories (Ukrainian forms bridged) | yes |
+| `memory_build_context` | Budget-limited context pack for a prompt | yes |
+| `memory_wake_up` | Hot-memory pack for session start | yes |
+| `memory_list` | Browse recent memories | yes |
+| `memory_stats` | Store statistics | yes |
+
+`memory_forget` is exposed because it is reversible — an agent can let a stale memory fade, and a human can `restore` it from the CLI. Truly destructive edits (`delete`, `update`, `revise`) are deliberately **not** exposed over MCP: an agent can add, recall, and soft-forget, but only you can permanently rewrite or remove.
+
+Tools take flat parameters, so the model sees `scope`, `kind`, `title`, … directly. Verify the whole protocol round-trip any time with `python scripts/mcp_smoke.py`, and see [docs/REAL_AI_TEST.md](docs/REAL_AI_TEST.md) for a hand-test script to run on a real model.
 
 ## How It Works
 
@@ -313,6 +410,10 @@ MemoryRecord
 |- updated_at
 \- last_accessed_at
 ```
+
+### Leaner Context Packs
+
+When building a `context` or `wake-up` pack, Memory Kernel skips a memory whose content closely overlaps one already included (token-overlap above a threshold). Under the same character budget, the pack then carries more distinct facts and less repetition — directly lowering the redundant context handed to the model. Tune or disable per call with `dedup_threshold` (1.0 disables).
 
 ### Ukrainian Inflection Bridging
 

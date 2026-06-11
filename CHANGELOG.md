@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.0 - 2026-06-01
+
+Adds an MCP server so LLM clients can use Memory Kernel directly.
+
+- New `memory-kernel-mcp` console command and `memory-kernel serve-mcp` subcommand run an [MCP](https://modelcontextprotocol.io) server over stdio, compatible with Claude Desktop, Claude Code, Cursor, and other MCP clients.
+- Eight tools exposed: `memory_remember`, `memory_ingest`, `memory_forget`, `memory_search`, `memory_build_context`, `memory_wake_up`, `memory_list`, `memory_stats`.
+- Tools take flat parameters (the model sees `scope`, `kind`, `title`, ... directly), not a nested object.
+- Read tools are annotated `readOnlyHint`; the write tools are non-destructive (dedup-merge, and a reversible soft-forget). Destructive edits (`delete`, `update`, `revise`) are intentionally kept out of the MCP surface and remain CLI-only.
+- Verified end-to-end over the real MCP protocol (`scripts/mcp_smoke.py`, `tests/test_mcp_e2e.py`): a client subprocess does the initialize handshake, lists tools, and calls them over stdio JSON-RPC. See `docs/REAL_AI_TEST.md` for connecting Claude Desktop / Claude Code and a hand-test script.
+- Database path comes from `--db` / `MEMORY_KERNEL_DB` / the default `.memory-kernel/memory.db`.
+- `mcp` is an optional dependency: `pip install "amormorri-memory-kernel[mcp]"`. The core package stays dependency-free.
+- README and the Ukrainian operating guide gained an MCP integration section with `claude_desktop_config.json` / `.mcp.json` examples.
+
+Memory that fades and stays lean:
+
+- New `decay` command applies a forgetting curve. Each memory gets a retention score from importance + recall reinforcement (access count) + time decay since last seen. `decay` auto-archives `note`/`fact` memories that are old, barely accessed, and below the retention threshold; `decision`/`constraint`/`task`/`preference` are never decayed. Tunable with `--min-age-days` / `--max-access` / `--threshold` / `--scope`, previewable with `--dry-run`, and recoverable (it archives, not deletes).
+- `context` and `wake-up` packs now drop near-duplicate memories (token-overlap above `dedup_threshold`, default 0.72), so a pack carries more distinct signal under the same character budget — less redundant context to the model.
+- When a context query has no lexical match (e.g. a broad "наш проєкт"), the pack falls back to hot memories instead of returning empty, with the header marking the fallback.
+
+Memory lifecycle (schema v4):
+
+- `forget --id` soft-archives a memory: hidden from `search` / `context` / `wake-up` / `list` but kept and recoverable with `restore --id`. Re-saving the same memory resurrects it.
+- `revise --id <new> --supersedes <old>` marks the old memory as replaced — hidden from recall, kept for history with a pointer to its replacement.
+- `list --include-archived` and `show` surface archived/superseded status.
+- Recall now excludes archived and superseded memories by default, so stale entries fade out instead of accumulating as noise. `export` still includes everything for faithful backup, and import preserves lifecycle state.
+- New `memory_forget` MCP tool (reversible, so safe for an agent). `delete` / `update` / `revise` stay CLI-only.
+- Schema bumped 3 → 4 (new `archived_at` and `superseded_by` columns); migration is automatic.
+
+Ukrainian quality fixes (found by dogfooding):
+
+- "прийнято рішення ...", "ухвалено рішення", "рішення", "ухвалили", "вирішено" now classify as `decision` (previously fell through to `note`). The decision title prefixes were extended too, so "Прийнято рішення перенести X" gets the title "перенести X".
+- Soft-group feminine noun declensions now share a stem: `памʼять` / `памʼяті` / `памʼяттю` / `памʼятей` all collapse to `пам`, so searching any case form finds the others. Previously a search for `памʼяттю` returned nothing.
+
+Tests: 96 → 122.
+
 ## 0.2.0 - 2026-05-10
 
 Second release. Focused on Ukrainian-language quality, day-to-day inspectability, and write-path performance.

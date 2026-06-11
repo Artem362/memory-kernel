@@ -276,9 +276,81 @@ def test_v1_database_without_meta_migrates_through_to_v3(tmp_path):
     cols = [r[1] for r in raw.execute("PRAGMA table_info(memories)")]
     raw.close()
 
-    assert version["value"] == "3"
+    assert version["value"] == "4"
     assert "fingerprint" in cols
     assert "stems_text" in cols
+    assert "archived_at" in cols
+    assert "superseded_by" in cols
+
+
+@pytest.mark.parametrize(
+    "term,expected",
+    [
+        ("памʼять", "пам"),
+        ("памʼяті", "пам"),
+        ("памʼяттю", "пам"),
+        ("памʼятей", "пам"),
+        ("памʼятями", "пам"),
+        ("памʼятях", "пам"),
+    ],
+)
+def test_deep_stem_bridges_pamyat_declensions(term, expected):
+    from memory_kernel.store import canonicalize_text, deep_stem
+
+    assert deep_stem(canonicalize_text(term)) == expected
+
+
+def test_new_noun_suffixes_do_not_shadow_plain_yamy():
+    from memory_kernel.store import canonicalize_text, deep_stem
+
+    # a normal -ями word must still lose only -ями, not be mis-stripped by the
+    # longer -ятями rule that now sits earlier in the suffix list
+    assert deep_stem(canonicalize_text("краями")) == "кра"
+    # and the longer rule still wins for the pamʼять family
+    assert deep_stem(canonicalize_text("памʼятями")) == "пам"
+
+
+def test_search_recall_finds_all_pamyat_forms(tmp_path):
+    db_path = tmp_path / "memory.db"
+    samples = [
+        ("Памʼять має лишатись локальною.", "constraint"),
+        ("Гарячий шлях памʼяті перенесли у Rust.", "fact"),
+        ("Працюємо над памʼяттю агента.", "task"),
+        ("Цей проєкт використовує SQLite FTS5.", "fact"),
+    ]
+    with MemoryStore(db_path) as store:
+        for index, (content, kind) in enumerate(samples):
+            store.remember_result(
+                MemoryInput(scope="pam.test", kind=kind, title=f"Sample {index}", content=content)
+            )
+        for query in ("памʼять", "памʼяті", "памʼяттю"):
+            titles = {r.title for r in store.search(query, limit=10)}
+            assert {"Sample 0", "Sample 1", "Sample 2"}.issubset(titles), f"{query} -> {titles}"
+            assert "Sample 3" not in titles, f"{query} -> {titles}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Прийнято рішення мігрувати базу даних.",
+        "Ухвалено рішення перейти на Postgres.",
+        "Рішення: зберігати памʼять локально.",
+        "Команда ухвалили перехід на Rust.",
+        "Вирішено перенести гарячий шлях.",
+    ],
+)
+def test_infer_kind_recognizes_ukrainian_decision_phrases(text):
+    from memory_kernel.store import infer_kind
+
+    assert infer_kind(text) == "decision"
+
+
+def test_derive_title_strips_pryynyato_rishennya_prefix():
+    from memory_kernel.store import derive_title
+
+    title = derive_title("Прийнято рішення перенести гарячий шлях у Rust", "decision")
+    assert not title.lower().startswith("прийнято"), title
+    assert "перенести" in title.lower()
 
 
 def test_disabled_stemmer_falls_back_to_exact_prefix(tmp_path, monkeypatch):

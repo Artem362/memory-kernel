@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "memory-kernel": {
+      "command": "memory-kernel-mcp",
+      "args": ["--db", ".memory-kernel/memory.db"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

@@ -180,6 +180,40 @@ memory-kernel delete --id 9f1e8c0a4b2d4e7f8a1b2c3d4e5f6a7b
 
 Команда повертає ненульовий код, якщо `id` не знайдено — зручно для скриптів.
 
+### `forget` / `restore`
+
+`delete` видаляє запис назавжди. Якщо ж треба просто прибрати його з видачі, але зберегти про всяк випадок — використовуй `forget` (мʼякий архів). Заархівовані записи зникають із `search`, `context`, `wake-up`, `list`, але дані лишаються, і `restore` повертає їх назад.
+
+```powershell
+memory-kernel forget --id 9f1e...
+memory-kernel restore --id 9f1e...
+memory-kernel list --include-archived   # побачити архівні / заміщені записи
+```
+
+Повторне збереження того самого запису через `remember`/`ingest` теж автоматично його воскрешає.
+
+### `revise`
+
+Коли новий запис замінює старий — зафіксуй це через `revise`: старий позначається заміщеним (прихований із видачі, але збережений з вказівником на заміну).
+
+```powershell
+memory-kernel revise --id <новий-id> --supersedes <старий-id>
+```
+
+Так памʼять сама себе впорядковує: застарілі рішення зникають із видачі, коли зʼявляються новіші, замість того щоб накопичуватись суперечливим шумом. Це і є «ресурс на продуктивність, а не на навантаження».
+
+### `decay`
+
+`decay` застосовує криву забування: автоматично архівує записи, які старі, рідко згадувані й малоцінні, щоб база й видача лишались легкими з часом. Кожен запис має retention-оцінку з важливості, частоти згадувань (підсилення) і часу від останнього доступу (спад).
+
+```powershell
+memory-kernel decay --dry-run          # подивитись, що згасне
+memory-kernel decay                    # застосувати (архівує, оборотно)
+memory-kernel decay --min-age-days 60 --max-access 0 --scope project.alpha
+```
+
+Підлягають лише `note` і `fact` — `decision`, `constraint`, `task`, `preference` ніколи не згасають. Архів оборотний, тож `restore` і `list --include-archived` дістають згаслі записи. Це і є серце тези: витрачати бюджет на важливе, дрібниці хай тануть.
+
 ### `completion`
 
 Використовуй, щоб згенерувати скрипт автодоповнення для shell. Скрипт будується з парсера динамічно, тому залишається актуальним при додаванні нових команд.
@@ -225,6 +259,54 @@ memory-kernel import --file exports\project-alpha.jsonl
 
 Один і той самий export можна імпортувати повторно без безкінечного плодіння дублікатів, бо імпорт іде через upsert по `id`.
 
+## Підключення до LLM (MCP)
+
+Memory Kernel має вбудований [MCP](https://modelcontextprotocol.io)-сервер, тож LLM може сам зберігати й діставати памʼять під час сесії. Працює з Claude Desktop, Claude Code, Cursor та будь-яким іншим MCP-клієнтом через stdio.
+
+Встанови з MCP-залежністю:
+
+```powershell
+pip install "amormorri-memory-kernel[mcp]"
+```
+
+Перевір, що сервер стартує:
+
+```powershell
+memory-kernel-mcp --db .memory-kernel\memory.db
+# або через основний CLI:
+memory-kernel serve-mcp --db-path .memory-kernel\memory.db
+```
+
+Далі зареєструй у клієнті. Для **Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "memory-kernel": {
+      "command": "memory-kernel-mcp",
+      "env": { "MEMORY_KERNEL_DB": "C:\\Users\\ty\\.memory-kernel\\memory.db" }
+    }
+  }
+}
+```
+
+Для **Claude Code / Cursor** (`.mcp.json` у корені проєкту):
+
+```json
+{
+  "mcpServers": {
+    "memory-kernel": {
+      "command": "memory-kernel-mcp",
+      "args": ["--db", "${workspaceFolder}/.memory-kernel/memory.db"]
+    }
+  }
+}
+```
+
+Сервер дає вісім інструментів: `memory_remember` (зберегти точний запис), `memory_ingest` (розбити сирий текст), `memory_forget` (мʼякий архів, оборотний), `memory_search` (пошук із bridge українських словоформ), `memory_build_context` (контекст-пак під бюджет), `memory_wake_up` (гарячий пак на старті), `memory_list`, `memory_stats`.
+
+`memory_forget` виведено в MCP, бо він оборотний — агент може дати застарілому запису згаснути, а людина може `restore` його з CLI. Справді деструктивні операції (`delete`, `update`, `revise`) свідомо **не** виведені в MCP — вони лишаються в людському CLI. Тобто агент може додавати, згадувати й мʼяко забувати, але назавжди переписати чи видалити памʼять можеш тільки ти. Це частина філософії inspect / control / trust.
+
 ## Як це працює
 
 Головна ідея дуже проста:
@@ -235,6 +317,10 @@ memory-kernel import --file exports\project-alpha.jsonl
 4. У модель потрапляє не вся база, а короткий `context pack` з лімітом символів.
 
 Саме це зменшує і розмитість, і навантаження.
+
+## Легші контекст-паки
+
+Збираючи `context` чи `wake-up` пак, Memory Kernel пропускає запис, чий вміст сильно перетинається з уже доданим (token-overlap вище порогу). За того самого бюджету символів пак несе більше різних фактів і менше повторів — це прямо зменшує надлишковий контекст, що йде в модель. Налаштовується через `dedup_threshold` (1.0 вимикає).
 
 ## Принцип роботи
 

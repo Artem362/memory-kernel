@@ -112,10 +112,13 @@ STOP_WORDS = {
 }
 MIN_INGEST_CHARS = 12
 NATIVE_RANKING_MIN_CANDIDATES = 24
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 UKRAINIAN_SUFFIXES = (
     "ування", "аються", "ається", "юються", "ується",
     "ються", "ється",
+    # soft-group feminine noun declensions (памʼять/памʼяті/памʼяттю/памʼятей);
+    # kept before the shorter -ями/-ям/-ях/-ять so the longer form wins
+    "ятями", "яттю", "ятей", "ятям", "ятях", "яті", "яте",
     "ення", "ання", "іння", "ивши", "авши", "уючи",
     "ила", "или", "ило", "ати", "яти", "ити", "іти", "ути",
     "ого", "ому", "ими", "ями",
@@ -130,6 +133,12 @@ UKRAINIAN_PREFIXES = (
 )
 LIGHT_STEM_MIN_LEN = 3
 DEEP_STEM_MIN_LEN = 3
+CONTEXT_DEDUP_THRESHOLD = 0.72
+RETENTION_HALF_LIFE_DAYS = 30.0
+DECAYABLE_KINDS = ("note", "fact")
+DEFAULT_DECAY_THRESHOLD = 0.35
+DEFAULT_DECAY_MIN_AGE_DAYS = 30
+DEFAULT_DECAY_MAX_ACCESS = 1
 BASE_IMPORTANCE = {
     "decision": 0.84,
     "constraint": 0.82,
@@ -161,6 +170,12 @@ KIND_HINTS = {
         "обрали",
         "переходимо",
         "замінюємо",
+        "прийнято рішення",
+        "ухвалено рішення",
+        "рішення",
+        "ухвалили",
+        "вирішено",
+        "ухвалено",
     ),
     "constraint": (
         "must",
@@ -246,7 +261,7 @@ HEDGE_WORDS = {
 }
 TITLE_PREFIX_PATTERNS = {
     "decision": (
-        r"^(?:we\s+decided\s+to|decided\s+to|decision:\s*|we\s+will\s+|switch\s+to\s+|adopt\s+|use\s+|вирішили\s+|обрали\s+|будемо\s+|переходимо\s+на\s+|замінюємо\s+)",
+        r"^(?:we\s+decided\s+to|decided\s+to|decision:\s*|we\s+will\s+|switch\s+to\s+|adopt\s+|use\s+|вирішили\s+|обрали\s+|будемо\s+|переходимо\s+на\s+|замінюємо\s+|прийнято\s+рішення\s+|ухвалено\s+рішення\s+|вирішено\s+|ухвалили\s+)",
     ),
     "constraint": (
         r"^(?:must\s+|must\s+stay\s+|cannot\s+|never\s+|should\s+|обовязково\s+|повинно\s+|має\s+|не\s+можна\s+)",
@@ -291,6 +306,8 @@ class MemoryRecord:
     last_accessed_at: str | None
     score: float = 0.0
     excerpt: str = ""
+    archived_at: str | None = None
+    superseded_by: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -326,6 +343,8 @@ class ImportedMemoryRecord:
     created_at: str
     updated_at: str
     last_accessed_at: str | None
+    archived_at: str | None = None
+    superseded_by: str | None = None
 
 
 def utc_now_iso() -> str:
@@ -487,7 +506,7 @@ def infer_kind(text: str) -> str:
         scores["note"] += 2
     if any(word in lowered for word in ("must", "never", "cannot", "повинно", "не можна")):
         scores["constraint"] += 1
-    if any(word in lowered for word in ("decided", "switch to", "replace", "вирішили", "обрали")):
+    if any(word in lowered for word in ("decided", "switch to", "replace", "вирішили", "обрали", "рішення", "ухвалили")):
         scores["decision"] += 1
 
     best_kind = max(scores, key=scores.get)
@@ -660,6 +679,34 @@ def deep_stem(term: str) -> str:
     return strip_ukrainian_prefix(light_stem(term))
 
 
+def retention_score(
+    *,
+    importance: float,
+    access_count: int,
+    last_seen: str | None,
+    now: datetime | None = None,
+) -> float:
+    """Estimate how strongly a memory should be retained (0.0 - 1.0).
+
+    Models a simple forgetting curve: base importance, reinforced by how often
+    the memory has been recalled, decayed by how long since it was last seen.
+    Frequently-recalled or important memories stay strong; old, untouched,
+    low-importance ones fade.
+    """
+    now = now or datetime.now(timezone.utc)
+    reinforcement = min(max(access_count, 0), 10) / 10.0
+    parsed = parse_timestamp(last_seen)
+    if parsed is None:
+        freshness = 0.0
+    else:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age_days = max((now - parsed).total_seconds() / 86400.0, 0.0)
+        freshness = 0.5 ** (age_days / RETENTION_HALF_LIFE_DAYS)
+    score = 0.5 * importance + 0.2 * reinforcement + 0.3 * freshness
+    return round(min(max(score, 0.0), 1.0), 4)
+
+
 def compute_stems_text(title: str, content: str, tags: Sequence[str]) -> str:
     if native_accel is not None:
         return native_accel.compute_stems_text(title, content, list(tags))
@@ -756,6 +803,7 @@ class MemoryStore:
         steps: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
             (2, self._migrate_v1_to_v2),
             (3, self._migrate_v2_to_v3),
+            (4, self._migrate_v3_to_v4),
         ]
         for target_version, migrate in steps:
             if current_version < target_version:
@@ -817,6 +865,17 @@ class MemoryStore:
         self._backfill_stems_text(connection)
         connection.executescript(self._fts_schema_sql())
         connection.execute("INSERT INTO memory_fts(memory_fts) VALUES('rebuild')")
+
+    def _migrate_v3_to_v4(self, connection: sqlite3.Connection) -> None:
+        columns = self._table_columns(connection, "memories")
+        if "archived_at" not in columns:
+            connection.execute("ALTER TABLE memories ADD COLUMN archived_at TEXT")
+        if "superseded_by" not in columns:
+            connection.execute("ALTER TABLE memories ADD COLUMN superseded_by TEXT")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memories_active "
+            "ON memories(archived_at, superseded_by)"
+        )
 
     def remember(self, payload: MemoryInput) -> str:
         return self.remember_result(payload).id
@@ -969,19 +1028,27 @@ class MemoryStore:
         scope: str | None = None,
         kind: str | None = None,
         tags: Sequence[str] = (),
+        dedup_threshold: float = CONTEXT_DEDUP_THRESHOLD,
     ) -> dict[str, Any]:
         results = self.search(
             query,
-            limit=max(limit * 3, limit),
+            limit=max(limit * 4, limit),
             scope=scope,
             kind=kind,
             tags=tags,
         )
+        header = f"Context pack for: {query}"
+        if not results and query.strip():
+            # no lexical match — fall back to hot memories (same as wake-up)
+            # so a broad query like "наш проєкт" still yields useful context
+            results = self.search("", limit=max(limit * 4, limit), scope=scope, kind=kind, tags=tags)
+            header = f"Context pack for: {query} (no direct match; showing hot memories)"
         return self._render_pack(
             results=results,
             budget_chars=budget_chars,
             limit=limit,
-            header=f"Context pack for: {query}",
+            header=header,
+            dedup_threshold=dedup_threshold,
         )
 
     def build_wake_up_pack(
@@ -990,13 +1057,15 @@ class MemoryStore:
         budget_chars: int = 800,
         limit: int = 6,
         scope: str | None = None,
+        dedup_threshold: float = CONTEXT_DEDUP_THRESHOLD,
     ) -> dict[str, Any]:
-        results = self.search("", limit=max(limit * 3, limit), scope=scope)
+        results = self.search("", limit=max(limit * 4, limit), scope=scope)
         return self._render_pack(
             results=results,
             budget_chars=budget_chars,
             limit=limit,
             header="Wake-up pack",
+            dedup_threshold=dedup_threshold,
         )
 
     def verify(self, *, repair: bool = False) -> dict[str, Any]:
@@ -1061,7 +1130,11 @@ class MemoryStore:
 
     def _collect_verification(self, connection: sqlite3.Connection) -> dict[str, Any]:
         version = self._get_schema_version(connection)
-        schema_issue = None if version == 3 else f"expected schema_version 3, got {version}"
+        schema_issue = (
+            None
+            if version == CURRENT_SCHEMA_VERSION
+            else f"expected schema_version {CURRENT_SCHEMA_VERSION}, got {version}"
+        )
 
         rows = connection.execute(
             """
@@ -1178,6 +1251,172 @@ class MemoryStore:
             )
         return cursor.rowcount > 0
 
+    def archive_memory(self, memory_id: str) -> bool:
+        """Soft-forget a memory: hide it from recall but keep it recoverable."""
+        self.init()
+        now = utc_now_iso()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memories
+                SET archived_at = ?, updated_at = ?
+                WHERE id = ? AND archived_at IS NULL
+                """,
+                (now, now, memory_id),
+            )
+            if cursor.rowcount == 0:
+                exists = connection.execute(
+                    "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                if exists is None:
+                    return False
+        return True
+
+    def restore_memory(self, memory_id: str) -> bool:
+        """Bring an archived memory back into recall."""
+        self.init()
+        now = utc_now_iso()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE memories
+                SET archived_at = NULL, updated_at = ?
+                WHERE id = ? AND archived_at IS NOT NULL
+                """,
+                (now, memory_id),
+            )
+            if cursor.rowcount == 0:
+                exists = connection.execute(
+                    "SELECT 1 FROM memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                if exists is None:
+                    return False
+        return True
+
+    def revise_memory(self, new_id: str, superseded_id: str) -> MemoryRecord:
+        """Mark ``superseded_id`` as replaced by ``new_id``.
+
+        The superseded memory is hidden from recall (like an archive) but kept
+        for history, with a pointer to the memory that replaced it.
+        """
+        self.init()
+        if new_id == superseded_id:
+            raise ValueError("a memory cannot supersede itself")
+        now = utc_now_iso()
+        with self._connect() as connection:
+            new_row = connection.execute(
+                "SELECT id FROM memories WHERE id = ?", (new_id,)
+            ).fetchone()
+            if new_row is None:
+                raise KeyError(f"superseding memory not found: {new_id}")
+            old_row = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (superseded_id,)
+            ).fetchone()
+            if old_row is None:
+                raise KeyError(f"memory not found: {superseded_id}")
+            connection.execute(
+                """
+                UPDATE memories
+                SET superseded_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (new_id, now, superseded_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM memories WHERE id = ?", (superseded_id,)
+            ).fetchone()
+        return self._row_to_record(updated, score=0.0, excerpt="")
+
+    def decay(
+        self,
+        *,
+        dry_run: bool = True,
+        min_age_days: int = DEFAULT_DECAY_MIN_AGE_DAYS,
+        max_access: int = DEFAULT_DECAY_MAX_ACCESS,
+        threshold: float = DEFAULT_DECAY_THRESHOLD,
+        scope: str | None = None,
+    ) -> dict[str, Any]:
+        """Auto-archive weak, stale, rarely-recalled memories (forgetting curve).
+
+        Only low-value kinds (note, fact) are eligible; decisions, constraints,
+        tasks, and preferences are never decayed. A memory is archived only when
+        it is old enough, barely accessed, and its retention score is below the
+        threshold. Archiving is recoverable via ``restore_memory``.
+        """
+        self.init()
+        now = datetime.now(timezone.utc)
+        placeholders = ",".join("?" for _ in DECAYABLE_KINDS)
+        params: list[Any] = list(DECAYABLE_KINDS)
+        scope_sql = ""
+        if scope:
+            scope_sql = "AND scope = ?"
+            params.append(scope)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id, kind, scope, title, importance, access_count,
+                       created_at, last_accessed_at
+                FROM memories
+                WHERE archived_at IS NULL AND superseded_by IS NULL
+                  AND kind IN ({placeholders})
+                  {scope_sql}
+                """,
+                params,
+            ).fetchall()
+
+            candidates: list[dict[str, Any]] = []
+            for row in rows:
+                last_seen = row["last_accessed_at"] or row["created_at"]
+                parsed = parse_timestamp(last_seen)
+                age_days = 0.0
+                if parsed is not None:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    age_days = max((now - parsed).total_seconds() / 86400.0, 0.0)
+                if age_days < min_age_days:
+                    continue
+                if int(row["access_count"]) > max_access:
+                    continue
+                retention = retention_score(
+                    importance=float(row["importance"]),
+                    access_count=int(row["access_count"]),
+                    last_seen=last_seen,
+                    now=now,
+                )
+                if retention >= threshold:
+                    continue
+                candidates.append(
+                    {
+                        "id": row["id"],
+                        "kind": row["kind"],
+                        "scope": row["scope"],
+                        "title": row["title"],
+                        "retention": retention,
+                        "age_days": round(age_days, 1),
+                    }
+                )
+
+            archived = 0
+            if not dry_run and candidates:
+                now_iso = utc_now_iso()
+                connection.executemany(
+                    "UPDATE memories SET archived_at = ?, updated_at = ? WHERE id = ?",
+                    [(now_iso, now_iso, item["id"]) for item in candidates],
+                )
+                archived = len(candidates)
+
+        return {
+            "dry_run": dry_run,
+            "scanned": len(rows),
+            "candidates": len(candidates),
+            "archived": archived,
+            "min_age_days": min_age_days,
+            "max_access": max_access,
+            "threshold": threshold,
+            "items": candidates,
+        }
+
     def update_memory(
         self,
         memory_id: str,
@@ -1259,12 +1498,13 @@ class MemoryStore:
         kind: str | None = None,
         tags: Sequence[str] = (),
         limit: int = 20,
+        include_archived: bool = False,
     ) -> list[MemoryRecord]:
         self.init()
         normalized_tags = normalize_tags(tags)
         with self._connect() as connection:
             filter_sql, params = self._build_filters(
-                scope=scope, kind=kind, tags=normalized_tags
+                scope=scope, kind=kind, tags=normalized_tags, include_archived=include_archived
             )
             rows = connection.execute(
                 f"""
@@ -1297,6 +1537,7 @@ class MemoryStore:
                 scope=scope,
                 kind=kind,
                 tags=normalized_tags,
+                include_archived=True,
             )
             limit_sql = ""
             query_params: list[Any] = [*params]
@@ -1402,7 +1643,9 @@ class MemoryStore:
                 access_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_accessed_at TEXT
+                last_accessed_at TEXT,
+                archived_at TEXT,
+                superseded_by TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_memories_scope_kind
@@ -1411,6 +1654,8 @@ class MemoryStore:
                 ON memories(importance DESC, certainty DESC, access_count DESC, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memories_fingerprint
                 ON memories(fingerprint);
+            CREATE INDEX IF NOT EXISTS idx_memories_active
+                ON memories(archived_at, superseded_by);
         """
 
     def _fts_schema_sql(self) -> str:
@@ -1490,8 +1735,11 @@ class MemoryStore:
         scope: str | None,
         kind: str | None,
         tags: Sequence[str],
+        include_archived: bool = False,
     ) -> list[sqlite3.Row]:
-        filter_sql, params = self._build_filters(scope=scope, kind=kind, tags=tags)
+        filter_sql, params = self._build_filters(
+            scope=scope, kind=kind, tags=tags, include_archived=include_archived
+        )
         query = f"""
             SELECT m.*
             FROM memory_fts
@@ -1512,8 +1760,11 @@ class MemoryStore:
         scope: str | None,
         kind: str | None,
         tags: Sequence[str],
+        include_archived: bool = False,
     ) -> list[sqlite3.Row]:
-        filter_sql, params = self._build_filters(scope=scope, kind=kind, tags=tags)
+        filter_sql, params = self._build_filters(
+            scope=scope, kind=kind, tags=tags, include_archived=include_archived
+        )
         pattern = f"%{query.lower()}%"
         query_sql = f"""
             SELECT m.*
@@ -1540,8 +1791,11 @@ class MemoryStore:
         scope: str | None,
         kind: str | None,
         tags: Sequence[str],
+        include_archived: bool = False,
     ) -> list[sqlite3.Row]:
-        filter_sql, params = self._build_filters(scope=scope, kind=kind, tags=tags)
+        filter_sql, params = self._build_filters(
+            scope=scope, kind=kind, tags=tags, include_archived=include_archived
+        )
         query = f"""
             SELECT m.*
             FROM memories AS m
@@ -1558,6 +1812,7 @@ class MemoryStore:
         scope: str | None,
         kind: str | None,
         tags: Sequence[str],
+        include_archived: bool = False,
     ) -> tuple[str, list[Any]]:
         filters: list[str] = []
         params: list[Any] = []
@@ -1571,6 +1826,8 @@ class MemoryStore:
         for tag in normalize_tags(tags):
             filters.append("AND lower(m.tags_text) LIKE ?")
             params.append(f"%{tag}%")
+        if not include_archived:
+            filters.append("AND m.archived_at IS NULL AND m.superseded_by IS NULL")
 
         return "\n".join(filters), params
 
@@ -1678,13 +1935,22 @@ class MemoryStore:
         budget_chars: int,
         limit: int,
         header: str,
+        dedup_threshold: float = CONTEXT_DEDUP_THRESHOLD,
     ) -> dict[str, Any]:
         lines: list[str] = [header]
         items: list[dict[str, Any]] = []
+        kept_contents: list[str] = []
 
         for result in results:
             if len(items) >= limit:
                 break
+
+            # drop near-duplicates so each pack entry carries distinct signal
+            if dedup_threshold < 1.0 and any(
+                token_overlap_score(result.content, kept) >= dedup_threshold
+                for kept in kept_contents
+            ):
+                continue
 
             line = f"- [{result.kind}/{result.scope}] {result.title}: {result.excerpt}"
             if result.source:
@@ -1708,6 +1974,7 @@ class MemoryStore:
                 }
             )
             lines.append(line)
+            kept_contents.append(result.content)
 
         rendered = "\n".join(lines)
         if len(rendered) > budget_chars:
@@ -1748,6 +2015,7 @@ class MemoryStore:
         excerpt: str,
     ) -> MemoryRecord:
         resolved_tags = tags if tags is not None else tuple(json.loads(row["tags_json"]))
+        keys = row.keys()
         return MemoryRecord(
             id=row["id"],
             scope=row["scope"],
@@ -1765,9 +2033,12 @@ class MemoryStore:
             last_accessed_at=row["last_accessed_at"],
             score=score,
             excerpt=excerpt,
+            archived_at=row["archived_at"] if "archived_at" in keys else None,
+            superseded_by=row["superseded_by"] if "superseded_by" in keys else None,
         )
 
     def _row_to_export_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        keys = row.keys()
         return {
             "id": row["id"],
             "scope": row["scope"],
@@ -1783,6 +2054,8 @@ class MemoryStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_accessed_at": row["last_accessed_at"],
+            "archived_at": row["archived_at"] if "archived_at" in keys else None,
+            "superseded_by": row["superseded_by"] if "superseded_by" in keys else None,
         }
 
     def _normalize_import_record(self, payload: dict[str, Any]) -> ImportedMemoryRecord:
@@ -1809,6 +2082,11 @@ class MemoryStore:
         )
         access_count = max(int(payload.get("access_count", 0)), 0)
         record_id = normalize_space(str(payload.get("id", ""))) or uuid.uuid4().hex
+        archived_at = self._coerce_import_timestamp(
+            payload.get("archived_at"), field_name="archived_at", fallback=None
+        )
+        superseded_raw = payload.get("superseded_by")
+        superseded_by = normalize_space(str(superseded_raw)) if superseded_raw else None
 
         return ImportedMemoryRecord(
             id=record_id,
@@ -1825,6 +2103,8 @@ class MemoryStore:
             created_at=created_at,
             updated_at=updated_at,
             last_accessed_at=last_accessed_at,
+            archived_at=archived_at,
+            superseded_by=superseded_by,
         )
 
     def _coerce_import_timestamp(
@@ -1862,9 +2142,10 @@ class MemoryStore:
             INSERT INTO memories (
                 id, scope, kind, title, summary, content,
                 tags_json, tags_text, stems_text, source, importance, certainty,
-                fingerprint, access_count, created_at, updated_at, last_accessed_at
+                fingerprint, access_count, created_at, updated_at, last_accessed_at,
+                archived_at, superseded_by
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 scope = excluded.scope,
                 kind = excluded.kind,
@@ -1881,7 +2162,9 @@ class MemoryStore:
                 access_count = excluded.access_count,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
-                last_accessed_at = excluded.last_accessed_at
+                last_accessed_at = excluded.last_accessed_at,
+                archived_at = excluded.archived_at,
+                superseded_by = excluded.superseded_by
             """,
             (
                 record.id,
@@ -1901,6 +2184,8 @@ class MemoryStore:
                 record.created_at,
                 record.updated_at,
                 record.last_accessed_at,
+                record.archived_at,
+                record.superseded_by,
             ),
         )
         return RememberResult(
@@ -2071,7 +2356,8 @@ class MemoryStore:
                 importance = ?,
                 certainty = ?,
                 fingerprint = ?,
-                updated_at = ?
+                updated_at = ?,
+                archived_at = NULL
             WHERE rowid = ?
             """,
             (

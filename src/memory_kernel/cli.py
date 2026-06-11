@@ -98,6 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--kind", choices=VALID_KINDS)
     list_cmd.add_argument("--tags", nargs="*", default=[])
     list_cmd.add_argument("--limit", type=int, default=20)
+    list_cmd.add_argument(
+        "--include-archived",
+        action="store_true",
+        dest="include_archived",
+        help="Also show archived and superseded memories.",
+    )
     list_cmd.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
     show = subparsers.add_parser("show", help="Show one memory by id.")
@@ -120,6 +126,40 @@ def build_parser() -> argparse.ArgumentParser:
     delete = subparsers.add_parser("delete", help="Delete a memory by id.")
     delete.add_argument("--id", required=True, dest="memory_id")
     delete.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    forget = subparsers.add_parser(
+        "forget",
+        help="Soft-archive a memory (hidden from recall, recoverable with restore).",
+    )
+    forget.add_argument("--id", required=True, dest="memory_id")
+    forget.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    restore = subparsers.add_parser("restore", help="Restore a previously archived memory.")
+    restore.add_argument("--id", required=True, dest="memory_id")
+    restore.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    revise = subparsers.add_parser(
+        "revise",
+        help="Mark memory --id as superseding an older memory --supersedes.",
+    )
+    revise.add_argument("--id", required=True, dest="memory_id", help="The new memory that replaces the old one.")
+    revise.add_argument("--supersedes", required=True, dest="superseded_id", help="The old memory being replaced.")
+    revise.add_argument("--json", action="store_true", help="Return machine-readable output.")
+
+    decay = subparsers.add_parser(
+        "decay",
+        help="Auto-archive weak, stale, rarely-used notes/facts (forgetting curve).",
+    )
+    decay.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be archived without changing anything.",
+    )
+    decay.add_argument("--min-age-days", type=int, default=None, help="Only decay memories older than this (default 30).")
+    decay.add_argument("--max-access", type=int, default=None, help="Only decay memories accessed at most this many times (default 1).")
+    decay.add_argument("--threshold", type=float, default=None, help="Retention threshold below which a memory decays (default 0.35).")
+    decay.add_argument("--scope", default=None, help="Restrict decay to one scope.")
+    decay.add_argument("--json", action="store_true", help="Return machine-readable output.")
 
     export = subparsers.add_parser("export", help="Export memories to json or jsonl.")
     export.add_argument("--scope")
@@ -155,6 +195,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print a shell completion script for memory-kernel.",
     )
     completion.add_argument("shell", choices=("bash", "powershell"))
+
+    serve_mcp = subparsers.add_parser(
+        "serve-mcp",
+        help="Run an MCP server (stdio) exposing memory to LLM clients.",
+    )
+    serve_mcp.add_argument(
+        "--db-path",
+        dest="mcp_db",
+        default=None,
+        help="Database path for the MCP server (defaults to --db / MEMORY_KERNEL_DB).",
+    )
 
     stats = subparsers.add_parser("stats", help="Show memory statistics.")
     stats.add_argument(
@@ -320,6 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kind=args.kind,
                 tags=args.tags,
                 limit=args.limit,
+                include_archived=args.include_archived,
             )
             if args.json:
                 print(json.dumps([r.to_dict() for r in records], ensure_ascii=False, indent=2))
@@ -383,6 +435,65 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"deleted {args.memory_id}")
             return 0
 
+        if args.command == "forget":
+            ok = store.archive_memory(args.memory_id)
+            if not ok:
+                print(f"memory not found: {args.memory_id}", file=sys.stderr)
+                return 1
+            payload = {"id": args.memory_id, "action": "archived"}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(f"archived {args.memory_id} (recover with: restore --id {args.memory_id})")
+            return 0
+
+        if args.command == "restore":
+            ok = store.restore_memory(args.memory_id)
+            if not ok:
+                print(f"memory not found: {args.memory_id}", file=sys.stderr)
+                return 1
+            payload = {"id": args.memory_id, "action": "restored"}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(f"restored {args.memory_id}")
+            return 0
+
+        if args.command == "revise":
+            try:
+                record = store.revise_memory(args.memory_id, args.superseded_id)
+            except KeyError as exc:
+                print(str(exc).strip("'"), file=sys.stderr)
+                return 1
+            except ValueError as exc:
+                print(f"revise: {exc}", file=sys.stderr)
+                return 1
+            payload = {
+                "superseded_id": record.id,
+                "superseded_by": args.memory_id,
+                "action": "superseded",
+            }
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(f"{record.id} is now superseded by {args.memory_id}")
+            return 0
+
+        if args.command == "decay":
+            decay_kwargs: dict = {"dry_run": args.dry_run, "scope": args.scope}
+            if args.min_age_days is not None:
+                decay_kwargs["min_age_days"] = args.min_age_days
+            if args.max_access is not None:
+                decay_kwargs["max_access"] = args.max_access
+            if args.threshold is not None:
+                decay_kwargs["threshold"] = args.threshold
+            report = store.decay(**decay_kwargs)
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                _print_decay_report(report)
+            return 0
+
         if args.command == "export":
             memories = store.export_memories(
                 scope=args.scope,
@@ -423,6 +534,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(_build_bash_completion(parser))
             else:
                 print(_build_powershell_completion(parser))
+            return 0
+
+        if args.command == "serve-mcp":
+            try:
+                from .mcp_server import run_server
+            except ImportError:
+                print(
+                    "serve-mcp requires the 'mcp' package. "
+                    "Install it with: pip install amormorri-memory-kernel[mcp]",
+                    file=sys.stderr,
+                )
+                return 1
+            run_server(db_path=args.mcp_db or args.db)
             return 0
 
         if args.command == "verify":
@@ -761,13 +885,35 @@ def _print_list(records: Sequence[MemoryRecord]) -> None:
         print("no memories found")
         return
     for record in records:
-        print(f"{record.id} [{record.kind}/{record.scope}] {record.title}")
+        status = ""
+        if record.superseded_by:
+            status = f"  (superseded by {record.superseded_by})"
+        elif record.archived_at:
+            status = "  (archived)"
+        print(f"{record.id} [{record.kind}/{record.scope}] {record.title}{status}")
         print(
             f"    updated_at={record.updated_at}"
             f"  importance={record.importance}  certainty={record.certainty}"
         )
         if record.tags:
             print(f"    tags={', '.join(record.tags)}")
+
+
+def _print_decay_report(report: dict) -> None:
+    verb = "would archive" if report["dry_run"] else "archived"
+    print(
+        f"scanned {report['scanned']} decayable memories, "
+        f"{verb} {len(report['items'])} "
+        f"(min_age_days={report['min_age_days']}, max_access={report['max_access']}, "
+        f"threshold={report['threshold']})"
+    )
+    for item in report["items"]:
+        print(
+            f"  - {item['id']} [{item['kind']}/{item['scope']}] {item['title']}"
+            f"  retention={item['retention']} age_days={item['age_days']}"
+        )
+    if report["dry_run"] and report["items"]:
+        print("run without --dry-run to archive these (recoverable with restore).")
 
 
 def _print_record(record: MemoryRecord) -> None:
@@ -786,6 +932,10 @@ def _print_record(record: MemoryRecord) -> None:
     if record.last_accessed_at:
         print(f"last_accessed_at: {record.last_accessed_at}")
     print(f"access_count: {record.access_count}")
+    if record.archived_at:
+        print(f"archived_at: {record.archived_at}")
+    if record.superseded_by:
+        print(f"superseded_by: {record.superseded_by}")
     print()
     print("content:")
     print(record.content)

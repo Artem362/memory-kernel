@@ -1,6 +1,6 @@
 [project]
 name = "amormorri-memory-kernel"
-version = "0.2.0"
+version = "0.3.0"
 description = "Focused local memory for AI agents with SQLite FTS5 and deterministic context packing."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,11 +27,13 @@ Repository = "https://github.com/Artem362/memory-kernel"
 "Bug Tracker" = "https://github.com/Artem362/memory-kernel/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0,<9"]
+dev = ["pytest>=8.0,<9", "mcp>=1.2.0"]
 accelerator = []
+mcp = ["mcp>=1.2.0"]
 
 [project.scripts]
 memory-kernel = "memory_kernel.cli:main"
+memory-kernel-mcp = "memory_kernel.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -43,6 +45,7 @@ packages = ["src/memory_kernel"]
 [tool.hatch.build.targets.sdist]
 exclude = [
   ".claude",
+  ".mcp.json",
   ".memory-kernel",
   ".pytest_cache",
   ".venv",

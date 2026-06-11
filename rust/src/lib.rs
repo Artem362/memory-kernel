@@ -28,6 +28,12 @@ const KIND_HINTS_DECISION: &[&str] = &[
     "обрали",
     "переходимо",
     "замінюємо",
+    "прийнято рішення",
+    "ухвалено рішення",
+    "рішення",
+    "ухвалили",
+    "вирішено",
+    "ухвалено",
 ];
 
 const KIND_HINTS_CONSTRAINT: &[&str] = &[
@@ -107,6 +113,9 @@ const STRONG_SIGNAL_WORDS: &[&str] = &[
 const UKRAINIAN_SUFFIXES: &[&str] = &[
     "ування", "аються", "ається", "юються", "ується",
     "ються", "ється",
+    // soft-group feminine noun declensions (памʼять/памʼяті/памʼяттю/памʼятей);
+    // kept before the shorter -ями/-ям/-ях/-ять so the longer form wins
+    "ятями", "яттю", "ятей", "ятям", "ятях", "яті", "яте",
     "ення", "ання", "іння", "ивши", "авши", "уючи",
     "ила", "или", "ило", "ати", "яти", "ити", "іти", "ути",
     "ого", "ому", "ими", "ями",
@@ -151,6 +160,10 @@ const DECISION_PREFIXES: &[&str] = &[
     "будемо",
     "переходимо на",
     "замінюємо",
+    "прийнято рішення",
+    "ухвалено рішення",
+    "вирішено",
+    "ухвалили",
 ];
 
 const CONSTRAINT_PREFIXES: &[&str] = &[
@@ -473,7 +486,7 @@ fn infer_kind_internal(text: &str) -> &'static str {
     if contains_word(&lowered, &["must", "never", "cannot", "повинно", "не можна"]) {
         scores[1] += 1;
     }
-    if contains_word(&lowered, &["decided", "switch to", "replace", "вирішили", "обрали"]) {
+    if contains_word(&lowered, &["decided", "switch to", "replace", "вирішили", "обрали", "рішення", "ухвалили"]) {
         scores[0] += 1;
     }
 
