@@ -1,6 +1,6 @@
 [project]
 name = "amormorri-memory-kernel"
-version = "0.3.0"
+version = "0.3.1"
 description = "Focused local memory for AI agents with SQLite FTS5 and deterministic context packing."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,8 @@ mcp = ["mcp>=1.2.0"]
 [project.scripts]
 memory-kernel = "memory_kernel.cli:main"
 memory-kernel-mcp = "memory_kernel.mcp_server:main"
+# alias matching the PyPI package name so `uvx amormorri-memory-kernel` starts the MCP server
+amormorri-memory-kernel = "memory_kernel.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -46,6 +48,7 @@ packages = ["src/memory_kernel"]
 exclude = [
   ".claude",
   ".mcp.json",
+  "server.json",
   ".memory-kernel",
   ".pytest_cache",
   ".venv",

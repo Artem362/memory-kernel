@@ -2,6 +2,8 @@
 
 # Memory Kernel
 
+<!-- mcp-name: io.github.artem362/memory-kernel -->
+
 `Memory Kernel` is a small local memory layer for AI agents.
 
 It helps you save useful things such as decisions, constraints, tasks, facts, and notes in a local SQLite database, then pull back only the few memories that matter for the current task.

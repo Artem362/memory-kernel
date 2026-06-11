@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 - 2026-06-11
+
+Metadata patch for the official MCP Registry submission.
+
+- README now carries the `mcp-name: io.github.artem362/memory-kernel` verification marker required for PyPI package ownership validation in the [MCP Registry](https://registry.modelcontextprotocol.io).
+- New console-script alias `amormorri-memory-kernel` (same as `memory-kernel-mcp`), so `uvx amormorri-memory-kernel` starts the MCP server directly — the invocation MCP clients derive from the registry entry.
+- Added `server.json` registry manifest to the repository.
+
+No functional changes.
+
 ## 0.3.0 - 2026-06-01
 
 Adds an MCP server so LLM clients can use Memory Kernel directly.
