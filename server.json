@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.artem362/memory-kernel",
+  "name": "io.github.Artem362/memory-kernel",
   "title": "Memory Kernel",
   "description": "Local-first memory for AI agents: SQLite FTS5, deterministic recall, no vector DB, no cloud.",
   "repository": {
