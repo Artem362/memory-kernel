@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- License change: future versions are licensed under the Apache License 2.0 (previously the Unlicense). Versions up to and including 0.3.1 remain available under the Unlicense. Added NOTICE and CONTRIBUTING.md (DCO sign-off required for contributions).
+
 ## 0.3.1 - 2026-06-11
 
 Metadata patch for the official MCP Registry submission.

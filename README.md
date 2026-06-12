@@ -505,6 +505,10 @@ Experimental native ranking is available for profiling:
 $env:MEMORY_KERNEL_EXPERIMENTAL_NATIVE_RANK=1
 ```
 
+## License
+
+Apache License 2.0 (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). Versions up to and including 0.3.1 were released under the Unlicense and remain available under those terms; all later versions are Apache-2.0. Contributions require a DCO sign-off — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Feedback
 
 Issue tracker:
