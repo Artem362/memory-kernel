@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 - 2026-06-11
 
-- License change: future versions are licensed under the Apache License 2.0 (previously the Unlicense). Versions up to and including 0.3.1 remain available under the Unlicense. Added NOTICE and CONTRIBUTING.md (DCO sign-off required for contributions).
+- License change: this and future versions are licensed under the Apache License 2.0 (previously the Unlicense). Versions up to and including 0.3.1 remain available under the Unlicense. Added NOTICE and CONTRIBUTING.md (DCO sign-off required for contributions).
+- Fixed the MCP Registry `mcp-name` marker to match the case-sensitive namespace (`io.github.Artem362`).
+
+No functional changes.
 
 ## 0.3.1 - 2026-06-11
 

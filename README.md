@@ -2,7 +2,7 @@
 
 # Memory Kernel
 
-<!-- mcp-name: io.github.artem362/memory-kernel -->
+<!-- mcp-name: io.github.Artem362/memory-kernel -->
 
 `Memory Kernel` is a small local memory layer for AI agents.
 
