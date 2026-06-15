@@ -574,6 +574,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"ranking engine: {payload['ranking_engine']}")
                 print(f"upsert engine: {payload['upsert_engine']}")
                 print(f"total memories: {payload['total_memories']}")
+                if "active_memories" in payload:
+                    print(
+                        f"  active: {payload['active_memories']}"
+                        f"  archived: {payload['archived_memories']}"
+                    )
                 print("by kind:")
                 for kind, count in payload["by_kind"].items():
                     print(f"  - {kind}: {count}")

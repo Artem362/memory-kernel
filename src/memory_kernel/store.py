@@ -220,6 +220,10 @@ KIND_HINTS = {
         "хочемо",
         "уникаємо",
         "бажано",
+        "надає перевагу",
+        "віддає перевагу",
+        "надаю перевагу",
+        "волію",
     ),
     "fact": (
         "currently",
@@ -1184,6 +1188,10 @@ class MemoryStore:
         self.init()
         with self._connect() as connection:
             total = connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            archived = connection.execute(
+                "SELECT COUNT(*) FROM memories "
+                "WHERE archived_at IS NOT NULL OR superseded_by IS NOT NULL"
+            ).fetchone()[0]
             by_kind = {
                 row["kind"]: row["count"]
                 for row in connection.execute(
@@ -1202,6 +1210,8 @@ class MemoryStore:
                 "ranking_engine": self._ranking_engine_label(),
                 "upsert_engine": self._upsert_engine_label(),
                 "total_memories": total,
+                "active_memories": total - archived,
+                "archived_memories": archived,
                 "by_kind": by_kind,
                 "top_scopes": by_scope,
             }

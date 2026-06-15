@@ -473,7 +473,9 @@ def memory_stats(
         "",
         f"- database: {payload['database']}",
         f"- accelerator: {payload['accelerator']}",
-        f"- total memories: {payload['total_memories']}",
+        f"- total memories: {payload['total_memories']} "
+        f"(active {payload.get('active_memories', payload['total_memories'])}, "
+        f"archived {payload.get('archived_memories', 0)})",
         "- by kind:",
     ]
     for kind, count in payload["by_kind"].items():

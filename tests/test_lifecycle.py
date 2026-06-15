@@ -207,3 +207,13 @@ def test_v3_database_migrates_to_v4(tmp_path):
     assert "archived_at" in cols
     assert "superseded_by" in cols
     assert version == "4"
+
+
+def test_stats_splits_active_and_archived(tmp_path):
+    db_path, old, _ = _seed(tmp_path)
+    with MemoryStore(db_path) as store:
+        store.archive_memory(old)
+        payload = store.stats()
+    assert payload["total_memories"] == 2
+    assert payload["active_memories"] == 1
+    assert payload["archived_memories"] == 1

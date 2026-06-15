@@ -1,6 +1,6 @@
 [project]
 name = "amormorri-memory-kernel"
-version = "0.3.2"
+version = "0.3.3"
 description = "Focused local memory for AI agents with SQLite FTS5 and deterministic context packing."
 readme = "README.md"
 requires-python = ">=3.11"

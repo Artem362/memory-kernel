@@ -370,3 +370,17 @@ def test_disabled_stemmer_falls_back_to_exact_prefix(tmp_path, monkeypatch):
     monkeypatch.delenv("MEMORY_KERNEL_DISABLE_STEMMER")
     reload(accelerator_module)
     reload(store_module)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Користувач надає перевагу точному пошуку над розмитим.",
+        "Команда віддає перевагу локальним інструментам.",
+        "Волію тримати дані на своїй машині.",
+    ],
+)
+def test_infer_kind_recognizes_preference_idioms(text):
+    from memory_kernel.store import infer_kind
+
+    assert infer_kind(text) == "preference"

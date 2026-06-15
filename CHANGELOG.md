@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3 - 2026-06-15
+
+Polish from a live real-AI test session (a model using the MCP server end-to-end).
+
+- `ingest`/classification: the preference idioms "надає перевагу", "віддає перевагу", "надаю перевагу", "волію" now classify as `preference` (previously fell through to `note`). Mirrored in the Rust accelerator.
+- `stats` now reports `active_memories` and `archived_memories` alongside `total_memories`, so the count of memories actually surfacing in recall is visible (the total still counts archived/superseded rows). Shown in the CLI and the `memory_stats` MCP tool.
+
+No schema or API breaking changes.
+
 ## 0.3.2 - 2026-06-11
 
 - License change: this and future versions are licensed under the Apache License 2.0 (previously the Unlicense). Versions up to and including 0.3.1 remain available under the Unlicense. Added NOTICE and CONTRIBUTING.md (DCO sign-off required for contributions).
